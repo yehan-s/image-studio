@@ -3,10 +3,10 @@
 /* eslint-disable @next/next/no-img-element */
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Check, Copy, Download, Pencil, RefreshCw, Save, Search, Trash2, X } from "lucide-react";
+import { Check, Copy, Download, Pencil, RefreshCw, Save, Search, Trash2, UserRound, X } from "lucide-react";
 import clsx from "clsx";
 import { sizeFromDimensions } from "@/lib/image-options";
-import type { GenerationMode, PublicImage, PublicTemplate } from "@/lib/types";
+import type { CurrentUser, GenerationMode, PublicImage, PublicTemplate } from "@/lib/types";
 import { apiJson, categoryLabels, copyTextToClipboard, formatDateTime, modeLabels } from "@/components/client-api";
 
 interface ImageListResponse {
@@ -17,6 +17,10 @@ interface TemplateListResponse {
   templates: PublicTemplate[];
 }
 
+interface MeResponse {
+  user: CurrentUser | null;
+}
+
 const allModes = ["", "text_to_image", "image_to_image"] as const;
 
 export function HistoryClient() {
@@ -25,6 +29,7 @@ export function HistoryClient() {
   const [templateId, setTemplateId] = useState("");
   const [images, setImages] = useState<PublicImage[]>([]);
   const [templates, setTemplates] = useState<PublicTemplate[]>([]);
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [selectionMode, setSelectionMode] = useState(false);
   const [message, setMessage] = useState("");
@@ -62,8 +67,14 @@ export function HistoryClient() {
   }, [keyword, mode, templateId]);
 
   useEffect(() => {
-    apiJson<TemplateListResponse>("/api/templates")
-      .then((payload) => setTemplates(payload.templates))
+    Promise.all([
+      apiJson<TemplateListResponse>("/api/templates"),
+      apiJson<MeResponse>("/api/auth/me"),
+    ])
+      .then(([templatesPayload, mePayload]) => {
+        setTemplates(templatesPayload.templates);
+        setCurrentUser(mePayload.user);
+      })
       .catch((caught: Error) => setError(caught.message));
   }, []);
 
@@ -82,6 +93,7 @@ export function HistoryClient() {
 
   const hasFilters = Boolean(keyword.trim() || mode || templateId);
   const selectedCount = selectedIds.length;
+  const showImageOwner = currentUser?.role === "admin";
 
   function toggleImageSelection(imageId: string): void {
     setSelectionMode(true);
@@ -273,6 +285,13 @@ export function HistoryClient() {
                 </div>
                 <div className="image-prompt">{image.prompt}</div>
                 <small>{formatDateTime(image.createdAt)}</small>
+                {showImageOwner ? (
+                  <span className="history-owner-badge">
+                    <UserRound size={13} aria-hidden="true" />
+                    {image.userName || image.userEmail || (image.userId ? "已删除用户" : "系统任务")}
+                    {image.userEmail ? <small>{image.userEmail}</small> : null}
+                  </span>
+                ) : null}
                 {image.templateId ? <small>{categoryLabels[templateMap.get(image.templateId)?.category ?? "company"]}</small> : null}
                 <div className="card-actions">
                   <a className="icon-button" href={image.url} download title="下载">

@@ -24,6 +24,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       recordLoginFailure(rateLimitKey);
       return jsonError("邮箱或密码不正确", 401);
     }
+    if (user.status === "disabled") {
+      recordLoginFailure(rateLimitKey);
+      return jsonError("账号已被禁用，请联系管理员", 403);
+    }
     clearLoginFailures(rateLimitKey);
 
     const { token } = createUserSession(user.id);

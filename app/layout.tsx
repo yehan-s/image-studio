@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import "tldraw/tldraw.css";
 import "./globals.css";
 import { AppShell } from "@/components/AppShell";
 import { getPublicSiteSettings } from "@/lib/db";

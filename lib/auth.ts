@@ -99,7 +99,10 @@ export function getRequestUser(request: NextRequest): CurrentUser | null {
   }
 
   const user = getUserById(session.user_id);
-  return user ? toCurrentUser(user) : null;
+  if (!user || user.status === "disabled") {
+    return null;
+  }
+  return toCurrentUser(user);
 }
 
 export function logoutRequest(request: NextRequest): void {

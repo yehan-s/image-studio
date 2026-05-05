@@ -9,18 +9,22 @@ import { normalizeImageSizeOption } from "./image-options";
 import { normalizeProxyUrl, redactProxyUrl } from "./proxy";
 import type {
   AdminStats,
+  CanvasProjectRow,
   ConversationMessageRow,
   ConversationRow,
   GenerationMode,
   GenerationTaskRow,
   GeneratedImageRow,
   ImageProvider,
+  ImageProviderChannel,
   OpenAIOAuthAccountRow,
   OpenAIOAuthAccountStatus,
   OpenAIOAuthSessionRow,
   PublicAdminSettings,
+  PublicCanvasProject,
   PublicConversation,
   PublicConversationMessage,
+  PublicImageProviderChannel,
   PublicImage,
   PublicTask,
   PublicSourceImage,
@@ -38,6 +42,7 @@ import type {
   TemplateScope,
   UserGroupRow,
   UserRole,
+  UserStatus,
   UserRow,
 } from "./types";
 
@@ -123,6 +128,7 @@ export interface CreateUserInput {
 export interface UpdateUserInput {
   name?: string;
   role?: UserRole;
+  status?: UserStatus;
   groupId?: string | null;
   monthlyQuota?: number | null;
 }
@@ -133,6 +139,7 @@ type AppSettingKey =
   | "sub2api_base_url"
   | "openai_oauth_proxy_url"
   | "image_model"
+  | "image_provider_channels"
   | "prompt_optimizer_model"
   | "image_concurrency"
   | "image_timeout_streak"
@@ -481,6 +488,15 @@ function initializeSchema(database: DatabaseSync): void {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS canvas_projects (
+      id TEXT PRIMARY KEY,
+      user_id TEXT UNIQUE,
+      name TEXT NOT NULL,
+      snapshot_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS templates (
       id TEXT PRIMARY KEY,
       owner_user_id TEXT,
@@ -557,6 +573,7 @@ function initializeSchema(database: DatabaseSync): void {
       name TEXT NOT NULL,
       password_hash TEXT NOT NULL,
       role TEXT NOT NULL CHECK (role IN ('admin', 'member')),
+      status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
       group_id TEXT,
       monthly_quota INTEGER,
       created_at TEXT NOT NULL,
@@ -629,6 +646,7 @@ function initializeSchema(database: DatabaseSync): void {
   ensureColumn(database, "conversations", "user_id", "TEXT");
   ensureColumn(database, "conversations", "fixed_prompt_enabled", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(database, "conversations", "fixed_prompt", "TEXT");
+  ensureColumn(database, "users", "status", "TEXT NOT NULL DEFAULT 'active'");
   ensureColumn(database, "users", "monthly_quota", "INTEGER");
   database.exec(`
     CREATE INDEX IF NOT EXISTS idx_generation_tasks_user
@@ -639,6 +657,12 @@ function initializeSchema(database: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_templates_owner
       ON templates (owner_user_id, created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_users_status
+      ON users (status, created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_canvas_projects_user
+      ON canvas_projects (user_id);
   `);
   seedDefaultGroups(database);
 }
@@ -737,8 +761,8 @@ export function createUser(input: CreateUserInput): UserRow {
     .prepare(
       `
       INSERT INTO users (
-        id, email, name, password_hash, role, group_id, monthly_quota, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, email, name, password_hash, role, status, group_id, monthly_quota, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
     )
     .run(
@@ -747,6 +771,7 @@ export function createUser(input: CreateUserInput): UserRow {
       input.name,
       input.passwordHash,
       input.role,
+      "active",
       input.groupId,
       input.monthlyQuota,
       createdAt,
@@ -772,7 +797,7 @@ export function getUserByEmail(email: string): UserRow | null {
 
 export function listUsers(): UserRow[] {
   return castRows<UserRow>(
-    getDb().prepare("SELECT * FROM users ORDER BY created_at ASC LIMIT 500").all(),
+    getDb().prepare("SELECT * FROM users ORDER BY created_at DESC LIMIT 500").all(),
   );
 }
 
@@ -783,10 +808,11 @@ export function updateUser(id: string, input: UpdateUserInput): UserRow {
   }
 
   getDb()
-    .prepare("UPDATE users SET name = ?, role = ?, group_id = ?, monthly_quota = ?, updated_at = ? WHERE id = ?")
+    .prepare("UPDATE users SET name = ?, role = ?, status = ?, group_id = ?, monthly_quota = ?, updated_at = ? WHERE id = ?")
     .run(
       input.name ?? existing.name,
       input.role ?? existing.role,
+      input.status ?? existing.status,
       input.groupId === undefined ? existing.group_id : input.groupId,
       input.monthlyQuota === undefined ? existing.monthly_quota : input.monthlyQuota,
       nowIso(),
@@ -798,6 +824,42 @@ export function updateUser(id: string, input: UpdateUserInput): UserRow {
     throw new Error("用户更新失败");
   }
   return updated;
+}
+
+export function countAdmins(exceptUserId?: string): number {
+  if (exceptUserId) {
+    const row = castRow<{ count: number }>(
+      getDb()
+        .prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND status = 'active' AND id != ?")
+        .get(exceptUserId),
+    );
+    return row?.count ?? 0;
+  }
+
+  const row = castRow<{ count: number }>(
+    getDb().prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND status = 'active'").get(),
+  );
+  return row?.count ?? 0;
+}
+
+export function deleteUser(id: string): UserRow {
+  const existing = getUserById(id);
+  if (!existing) {
+    throw new Error("用户不存在");
+  }
+
+  const database = getDb();
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    database.prepare("DELETE FROM sessions WHERE user_id = ?").run(id);
+    database.prepare("DELETE FROM users WHERE id = ?").run(id);
+    database.exec("COMMIT");
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+
+  return existing;
 }
 
 export function createSession(input: { userId: string; tokenHash: string; expiresAt: string }): SessionRow {
@@ -1080,6 +1142,147 @@ export function toPublicOpenAIOAuthAccount(row: OpenAIOAuthAccountRow): PublicOp
   };
 }
 
+function normalizeProviderChannel(value: unknown, fallbackIndex: number): ImageProviderChannel | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const record = value as Partial<ImageProviderChannel>;
+  const baseUrl = typeof record.baseUrl === "string" ? record.baseUrl.trim().replace(/\/+$/, "") : "";
+  const apiKey = typeof record.apiKey === "string" ? record.apiKey.trim() : "";
+  const model = typeof record.model === "string" ? record.model.trim() : "";
+  if (!baseUrl || !apiKey || !model) {
+    return null;
+  }
+
+  const now = nowIso();
+  const priority = Number(record.priority);
+  return {
+    id: typeof record.id === "string" && record.id.trim() ? record.id.trim() : createId("chn"),
+    name:
+      typeof record.name === "string" && record.name.trim()
+        ? record.name.trim().slice(0, 60)
+        : `模型渠道 ${fallbackIndex + 1}`,
+    enabled: record.enabled !== false,
+    priority: Number.isFinite(priority) ? Math.max(1, Math.floor(priority)) : fallbackIndex + 1,
+    baseUrl,
+    model,
+    apiKey,
+    createdAt: typeof record.createdAt === "string" && record.createdAt ? record.createdAt : now,
+    updatedAt: typeof record.updatedAt === "string" && record.updatedAt ? record.updatedAt : now,
+  };
+}
+
+function singleProviderChannelFromLegacySettings(): ImageProviderChannel | null {
+  const apiKey = getAppSetting("sub2api_api_key") || appConfig.sub2apiApiKey;
+  const baseUrl = getAppSetting("sub2api_base_url") || appConfig.sub2apiBaseUrl;
+  const model = getAppSetting("image_model") || appConfig.imageModel;
+  if (!apiKey) {
+    return null;
+  }
+  const createdAt = nowIso();
+  return {
+    id: "legacy_sub2api",
+    name: "默认 API Key 渠道",
+    enabled: true,
+    priority: 1,
+    baseUrl: baseUrl.replace(/\/+$/, ""),
+    model,
+    apiKey,
+    createdAt,
+    updatedAt: createdAt,
+  };
+}
+
+export function getImageProviderChannels(): ImageProviderChannel[] {
+  const raw = getAppSetting("image_provider_channels");
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (Array.isArray(parsed)) {
+        const channels = parsed
+          .map((item, index) => normalizeProviderChannel(item, index))
+          .filter((channel): channel is ImageProviderChannel => channel !== null)
+          .sort((left, right) => left.priority - right.priority || left.createdAt.localeCompare(right.createdAt));
+        if (channels.length > 0) {
+          return channels;
+        }
+      }
+    } catch {
+      // Fall back to legacy settings when the saved channel JSON is invalid.
+    }
+  }
+
+  const legacy = singleProviderChannelFromLegacySettings();
+  return legacy ? [legacy] : [];
+}
+
+export function toPublicImageProviderChannel(channel: ImageProviderChannel): PublicImageProviderChannel {
+  return {
+    id: channel.id,
+    name: channel.name,
+    enabled: channel.enabled,
+    priority: channel.priority,
+    baseUrl: channel.baseUrl,
+    model: channel.model,
+    apiKeyConfigured: channel.apiKey.length > 0,
+    createdAt: channel.createdAt,
+    updatedAt: channel.updatedAt,
+  };
+}
+
+export function saveImageProviderChannels(
+  input: Array<{
+    id?: string;
+    name: string;
+    enabled: boolean;
+    priority: number;
+    baseUrl: string;
+    model: string;
+    apiKey?: string | null;
+  }>,
+): ImageProviderChannel[] {
+  const existingById = new Map(getImageProviderChannels().map((channel) => [channel.id, channel]));
+  const now = nowIso();
+  const channels = input
+    .map((item, index) => {
+      const id = item.id?.trim() || createId("chn");
+      const existing = existingById.get(id);
+      const apiKey = item.apiKey?.trim() || existing?.apiKey || "";
+      return normalizeProviderChannel(
+        {
+          id,
+          name: item.name,
+          enabled: item.enabled,
+          priority: item.priority,
+          baseUrl: item.baseUrl,
+          model: item.model,
+          apiKey,
+          createdAt: existing?.createdAt ?? now,
+          updatedAt: now,
+        },
+        index,
+      );
+    })
+    .filter((channel): channel is ImageProviderChannel => channel !== null)
+    .sort((left, right) => left.priority - right.priority || left.createdAt.localeCompare(right.createdAt));
+
+  if (channels.length === 0) {
+    throw new Error("至少需要保留一个可用模型渠道");
+  }
+  if (!channels.some((channel) => channel.enabled)) {
+    throw new Error("至少需要启用一个模型渠道");
+  }
+
+  setAppSetting("image_provider_channels", JSON.stringify(channels));
+  const firstEnabled = channels.find((channel) => channel.enabled) ?? channels[0];
+  setAppSetting("sub2api_base_url", firstEnabled.baseUrl);
+  setAppSetting("image_model", firstEnabled.model);
+  if (firstEnabled.apiKey) {
+    setAppSetting("sub2api_api_key", firstEnabled.apiKey);
+  }
+  return channels;
+}
+
 export function getRuntimeImageSettings(): {
   imageProvider: ImageProvider;
   sub2apiApiKey: string;
@@ -1087,15 +1290,20 @@ export function getRuntimeImageSettings(): {
   openaiOAuthProxyUrl: string;
   imageModel: string;
   imageConcurrency: number;
+  imageProviderChannels: ImageProviderChannel[];
 } {
   const provider = getAppSetting("image_provider");
+  const imageProvider = provider === "openai_oauth" ? "openai_oauth" : "sub2api";
+  const channels = getImageProviderChannels();
+  const firstEnabledChannel = channels.find((channel) => channel.enabled) ?? channels[0] ?? null;
   return {
-    imageProvider: provider === "openai_oauth" ? "openai_oauth" : "sub2api",
-    sub2apiApiKey: getAppSetting("sub2api_api_key") || appConfig.sub2apiApiKey,
-    sub2apiBaseUrl: getAppSetting("sub2api_base_url") || appConfig.sub2apiBaseUrl,
+    imageProvider,
+    sub2apiApiKey: firstEnabledChannel?.apiKey ?? getAppSetting("sub2api_api_key") ?? appConfig.sub2apiApiKey,
+    sub2apiBaseUrl: firstEnabledChannel?.baseUrl ?? getAppSetting("sub2api_base_url") ?? appConfig.sub2apiBaseUrl,
     openaiOAuthProxyUrl: normalizeProxyUrl(getAppSetting("openai_oauth_proxy_url")),
-    imageModel: getAppSetting("image_model") || appConfig.imageModel,
+    imageModel: firstEnabledChannel?.model ?? getAppSetting("image_model") ?? appConfig.imageModel,
     imageConcurrency: normalizeImageConcurrency(getAppSetting("image_concurrency") ?? 2, 2),
+    imageProviderChannels: channels,
   };
 }
 
@@ -1188,6 +1396,7 @@ export function getPublicAdminSettings(): PublicAdminSettings {
     imageProvider: settings.imageProvider,
     sub2apiApiKeyConfigured: settings.sub2apiApiKey.length > 0,
     sub2apiBaseUrl: settings.sub2apiBaseUrl,
+    imageProviderChannels: settings.imageProviderChannels.map(toPublicImageProviderChannel),
     openaiOAuthProxyConfigured: settings.openaiOAuthProxyUrl.length > 0,
     openaiOAuthProxyDisplay: redactProxyUrl(settings.openaiOAuthProxyUrl),
     imageModel: settings.imageModel,
@@ -1937,7 +2146,81 @@ export function getImageFilePathById(id: string): string | null {
   return source?.file_path ?? null;
 }
 
-export function listImages(input: ListImagesInput): Array<GeneratedImageRow & { template_name: string | null }> {
+export function getCanvasProject(userId: string | null): CanvasProjectRow | null {
+  return castRow<CanvasProjectRow>(
+    getDb()
+      .prepare("SELECT * FROM canvas_projects WHERE user_id IS ? LIMIT 1")
+      .get(userId),
+  );
+}
+
+export function saveCanvasProject(input: {
+  userId: string | null;
+  name?: string | null;
+  snapshot: unknown | null;
+}): CanvasProjectRow {
+  const existing = getCanvasProject(input.userId);
+  const id = existing?.id ?? createId("canvas");
+  const now = nowIso();
+  const snapshotJson = JSON.stringify(input.snapshot ?? null);
+  const name = input.name?.trim() || existing?.name || "默认画布";
+
+  getDb()
+    .prepare(
+      `
+      INSERT INTO canvas_projects (
+        id, user_id, name, snapshot_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(user_id) DO UPDATE SET
+        name = excluded.name,
+        snapshot_json = excluded.snapshot_json,
+        updated_at = excluded.updated_at
+    `,
+    )
+    .run(id, input.userId, name, snapshotJson, existing?.created_at ?? now, now);
+
+  const project = getCanvasProject(input.userId);
+  if (!project) {
+    throw new Error("画布保存失败");
+  }
+  return project;
+}
+
+export function toPublicCanvasProject(row: CanvasProjectRow | null): PublicCanvasProject {
+  if (!row) {
+    return {
+      id: "canvas_empty",
+      name: "默认画布",
+      snapshot: null,
+      updatedAt: nowIso(),
+    };
+  }
+
+  let snapshot: unknown | null = null;
+  try {
+    snapshot = JSON.parse(row.snapshot_json) as unknown;
+  } catch {
+    snapshot = null;
+  }
+
+  return {
+    id: row.id,
+    name: row.name,
+    snapshot,
+    updatedAt: row.updated_at,
+  };
+}
+
+export function listImages(
+  input: ListImagesInput,
+): Array<
+  GeneratedImageRow & {
+    template_name: string | null;
+    user_id: string | null;
+    user_name: string | null;
+    user_email: string | null;
+  }
+> {
   const database = getDb();
   const where: string[] = [];
   const params: Array<string | number> = [];
@@ -1970,14 +2253,27 @@ export function listImages(input: ListImagesInput): Array<GeneratedImageRow & { 
   const pageSize = Math.min(Math.max(input.pageSize, 1), 60);
   const offset = (Math.max(input.page, 1) - 1) * pageSize;
 
-  return castRows<GeneratedImageRow & { template_name: string | null }>(
+  return castRows<
+    GeneratedImageRow & {
+      template_name: string | null;
+      user_id: string | null;
+      user_name: string | null;
+      user_email: string | null;
+    }
+  >(
     database
     .prepare(
       `
-      SELECT gi.*, t.name AS template_name
+      SELECT
+        gi.*,
+        t.name AS template_name,
+        gt.user_id AS user_id,
+        u.name AS user_name,
+        u.email AS user_email
       FROM generated_images gi
       INNER JOIN generation_tasks gt ON gt.id = gi.task_id
       LEFT JOIN templates t ON t.id = gi.template_id
+      LEFT JOIN users u ON u.id = gt.user_id
       ${whereSql}
       ORDER BY gi.created_at DESC
       LIMIT ? OFFSET ?
@@ -2537,10 +2833,20 @@ export function toPublicSourceImage(row: SourceImageRow): PublicSourceImage {
   };
 }
 
-export function toPublicImage(row: GeneratedImageRow & { template_name?: string | null }): PublicImage {
+export function toPublicImage(
+  row: GeneratedImageRow & {
+    template_name?: string | null;
+    user_id?: string | null;
+    user_name?: string | null;
+    user_email?: string | null;
+  },
+): PublicImage {
   return {
     id: row.id,
     taskId: row.task_id,
+    userId: row.user_id ?? null,
+    userName: row.user_name ?? null,
+    userEmail: row.user_email ?? null,
     url: imagePublicUrl(row.file_path),
     width: row.width,
     height: row.height,
@@ -2594,6 +2900,7 @@ export function toPublicUser(row: UserRow): PublicUser {
     email: row.email,
     name: row.name,
     role: row.role,
+    status: row.status,
     groupId: row.group_id,
     groupName: group?.name ?? null,
     quotaOverride: row.monthly_quota,

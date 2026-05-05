@@ -35,8 +35,35 @@ export interface TemplateVariableDefinition {
 export const userRoles = ["admin", "member"] as const;
 export type UserRole = (typeof userRoles)[number];
 
+export const userStatuses = ["active", "disabled"] as const;
+export type UserStatus = (typeof userStatuses)[number];
+
 export const imageProviders = ["sub2api", "openai_oauth"] as const;
 export type ImageProvider = (typeof imageProviders)[number];
+
+export interface ImageProviderChannel {
+  id: string;
+  name: string;
+  enabled: boolean;
+  priority: number;
+  baseUrl: string;
+  model: string;
+  apiKey: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PublicImageProviderChannel {
+  id: string;
+  name: string;
+  enabled: boolean;
+  priority: number;
+  baseUrl: string;
+  model: string;
+  apiKeyConfigured: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
 
 export const imageConcurrencyLimits = {
   min: 1,
@@ -95,6 +122,15 @@ export interface SourceImageRow {
   created_at: string;
 }
 
+export interface CanvasProjectRow {
+  id: string;
+  user_id: string | null;
+  name: string;
+  snapshot_json: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface TemplateRow {
   id: string;
   owner_user_id: string | null;
@@ -146,6 +182,7 @@ export interface UserRow {
   name: string;
   password_hash: string;
   role: UserRole;
+  status: UserStatus;
   group_id: string | null;
   monthly_quota: number | null;
   created_at: string;
@@ -207,6 +244,9 @@ export interface PublicOpenAIOAuthAccount {
 export interface PublicImage {
   id: string;
   taskId: string;
+  userId: string | null;
+  userName: string | null;
+  userEmail: string | null;
   url: string;
   width: number;
   height: number;
@@ -225,6 +265,13 @@ export interface PublicSourceImage {
   originalName: string | null;
   mimeType: string | null;
   createdAt: string;
+}
+
+export interface PublicCanvasProject {
+  id: string;
+  name: string;
+  snapshot: unknown | null;
+  updatedAt: string;
 }
 
 export interface PublicTask {
@@ -295,6 +342,7 @@ export interface PublicUser {
   email: string;
   name: string;
   role: UserRole;
+  status: UserStatus;
   groupId: string | null;
   groupName: string | null;
   quotaOverride: number | null;
@@ -388,6 +436,7 @@ export interface PublicAdminSettings {
   imageProvider: ImageProvider;
   sub2apiApiKeyConfigured: boolean;
   sub2apiBaseUrl: string;
+  imageProviderChannels: PublicImageProviderChannel[];
   openaiOAuthProxyConfigured: boolean;
   openaiOAuthProxyDisplay: string | null;
   imageModel: string;

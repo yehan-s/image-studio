@@ -1988,6 +1988,9 @@ function ConversationMessageItem({
         {isUser && message.sourceImage ? <SourceReferencePreview image={message.sourceImage} label="主图" /> : null}
         {isUser && task ? <SourceReferencePreviewList images={task.referenceImages.length > 0 ? task.referenceImages : task.referenceImage ? [task.referenceImage] : []} /> : null}
         {shouldShowTaskError ? <small className="toast-line error">{compactErrorMessage(task.errorMessage)}</small> : null}
+        {!isUser && task && images.length === 0 && (task.status === "queued" || task.status === "processing") ? (
+          <GenerationPlaceholderGrid task={task} />
+        ) : null}
         {images.length > 1 ? (
           <div className="message-image-grid">
             {images.map((image) => (
@@ -2017,6 +2020,25 @@ function ConversationMessageItem({
         {expandedImage ? <ImageLightbox image={expandedImage} onClose={() => setExpandedImage(null)} /> : null}
       </div>
     </article>
+  );
+}
+
+function GenerationPlaceholderGrid({ task }: { task: PublicTask }) {
+  const count = Math.max(1, task.quantity);
+  const label = taskDisplayLabel(task);
+  return (
+    <div className={clsx("generation-placeholder-grid", count > 1 && "multi")} aria-label={`正在生成 ${count} 张图片`}>
+      {Array.from({ length: count }, (_, index) => (
+        <div className="generation-placeholder-card" key={`${task.id}-${index}`}>
+          <div className="generation-placeholder-shimmer" />
+          <div className="generation-placeholder-meta">
+            <Sparkles size={15} aria-hidden="true" />
+            <span>{label}</span>
+            <small>{index + 1}/{count}</small>
+          </div>
+        </div>
+      ))}
+    </div>
   );
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "canvas-realm-gpt-image-2-studio",
-  "version": "0.2.14",
+  "version": "0.2.15",
   "private": false,
   "scripts": {
     "dev": "next dev",
@@ -15,6 +15,7 @@
     "secret:scan": "bash scripts/secret-scan.sh"
   },
   "dependencies": {
+    "@tldraw/tlschema": "4.5.10",
     "clsx": "^2.1.1",
     "concurrently": "^9.2.1",
     "lucide-react": "^0.468.0",
@@ -23,6 +24,7 @@
     "proxy-agent": "^6",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "tldraw": "^4.5.10",
     "zod": "^3.24.1"
   },
   "devDependencies": {

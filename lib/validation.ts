@@ -9,6 +9,7 @@ import {
   templateScopes,
   templateVariableTypes,
   userRoles,
+  userStatuses,
 } from "./types";
 
 const nullableString = z
@@ -145,6 +146,20 @@ export const updateAdminSettingsSchema = z.object({
   imageProvider: z.enum(imageProviders).optional(),
   sub2apiApiKey: z.string().trim().min(1).max(500).optional(),
   sub2apiBaseUrl: z.string().trim().url().max(300).optional(),
+  imageProviderChannels: z
+    .array(
+      z.object({
+        id: z.string().trim().max(80).optional(),
+        name: z.string().trim().min(1, "渠道名称不能为空").max(60),
+        enabled: z.boolean().default(true),
+        priority: z.coerce.number().int().min(1).max(1000),
+        baseUrl: z.string().trim().url("渠道 Base URL 格式不正确").max(300),
+        model: z.string().trim().min(1, "渠道模型不能为空").max(100),
+        apiKey: z.string().trim().max(500).nullable().optional(),
+      }),
+    )
+    .max(20)
+    .optional(),
   openaiOAuthProxyUrl: z.union([z.string().trim().max(500), z.null()]).optional(),
   imageModel: z.string().trim().min(1).max(100).optional(),
   promptOptimizerModel: z.string().trim().min(1).max(100).optional(),
@@ -177,6 +192,11 @@ export const continueConversationSchema = z.object({
   quantity: z.union([z.literal(1), z.literal(2), z.literal(4)]).default(1),
   referenceStrength: z.coerce.number().min(0).max(1).default(0.65),
   styleStrength: z.coerce.number().min(0).max(1).default(0.7),
+});
+
+export const saveCanvasProjectSchema = z.object({
+  name: z.string().trim().min(1).max(80).optional(),
+  snapshot: z.unknown().nullable(),
 });
 
 export const updateConversationFixedPromptSchema = z.object({
@@ -219,6 +239,7 @@ export const upsertUserGroupSchema = z.object({
 export const updateUserSchema = z.object({
   name: z.string().trim().min(1).max(60).optional(),
   role: z.enum(userRoles).optional(),
+  status: z.enum(userStatuses).optional(),
   groupId: nullableString,
   monthlyQuota: z.coerce.number().int().min(0).max(100000).nullable().optional(),
 });

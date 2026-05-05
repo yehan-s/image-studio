@@ -40,6 +40,8 @@ const openAICodexUserAgent = "codex_cli_rs/0.125.0";
 
 interface ImageRequestSettings {
   provider: ImageProvider;
+  channelId?: string;
+  channelName?: string;
   baseUrl: string;
   bearerToken: string;
   imageModel: string;
@@ -59,7 +61,29 @@ export async function callImageModel(
   sourceImagePaths: string[],
   signal?: AbortSignal,
 ): Promise<MaterializedImage[]> {
-  const settings = await resolveImageProviderSettings(signal);
+  const candidates = await resolveImageProviderCandidates(signal);
+  let lastError: unknown = null;
+
+  for (const settings of candidates) {
+    try {
+      return await callImageModelWithSettings(task, sourceImagePaths, settings, signal);
+    } catch (error) {
+      if (isAbortError(error) || signal?.aborted) {
+        throw error;
+      }
+      lastError = error;
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error("所有模型渠道均调用失败");
+}
+
+async function callImageModelWithSettings(
+  task: GenerationTaskRow,
+  sourceImagePaths: string[],
+  settings: ImageRequestSettings,
+  signal?: AbortSignal,
+): Promise<MaterializedImage[]> {
   const taskConcurrency = normalizeTaskImageConcurrency(task.requested_concurrency, settings.imageConcurrency);
 
   const images: MaterializedImage[] = [];
@@ -94,7 +118,7 @@ function normalizeTaskImageConcurrency(value: number | null, fallback: number): 
   return Math.min(Math.max(1, Math.floor(value)), Math.max(1, fallback));
 }
 
-async function resolveImageProviderSettings(signal?: AbortSignal): Promise<ImageRequestSettings> {
+async function resolveImageProviderCandidates(signal?: AbortSignal): Promise<ImageRequestSettings[]> {
   const settings = getRuntimeImageSettings();
   if (settings.imageProvider === "openai_oauth") {
     const account = getUsableOpenAIOAuthAccount();
@@ -102,8 +126,10 @@ async function resolveImageProviderSettings(signal?: AbortSignal): Promise<Image
       throw new Error("已选择 OpenAI OAuth 模式，但后台没有可用 OpenAI 账号");
     }
     const accessToken = await getFreshOpenAIAccessToken(account, settings.openaiOAuthProxyUrl, signal);
-    return {
+    return [{
       provider: "openai_oauth",
+      channelId: account.id,
+      channelName: account.email ?? "OpenAI OAuth",
       baseUrl: appConfig.openaiOAuthApiBaseUrl.replace(/\/+$/, ""),
       bearerToken: accessToken,
       imageModel: settings.imageModel,
@@ -111,19 +137,38 @@ async function resolveImageProviderSettings(signal?: AbortSignal): Promise<Image
       openaiOAuthProxyUrl: settings.openaiOAuthProxyUrl,
       oauthAccountId: account.id,
       chatGPTAccountId: account.account_id,
-    };
+    }];
   }
 
-  if (!settings.sub2apiApiKey) {
+  const channels = settings.imageProviderChannels.filter((channel) => channel.enabled && channel.apiKey);
+  if (channels.length === 0 && !settings.sub2apiApiKey) {
     throw new Error("SUB2API_API_KEY 未配置，无法调用 image-2");
   }
-  return {
-    provider: "sub2api",
-    baseUrl: settings.sub2apiBaseUrl.replace(/\/+$/, ""),
-    bearerToken: settings.sub2apiApiKey,
-    imageModel: settings.imageModel,
+
+  const fallbackChannel = settings.sub2apiApiKey
+    ? [{
+        id: "legacy_sub2api",
+        name: "默认 API Key 渠道",
+        enabled: true,
+        priority: 999,
+        baseUrl: settings.sub2apiBaseUrl,
+        model: settings.imageModel,
+        apiKey: settings.sub2apiApiKey,
+        createdAt: new Date(0).toISOString(),
+        updatedAt: new Date(0).toISOString(),
+      }]
+    : [];
+
+  const resolvedChannels = channels.length > 0 ? channels : fallbackChannel;
+  return resolvedChannels.map((channel) => ({
+    provider: "sub2api" as const,
+    channelId: channel.id,
+    channelName: channel.name,
+    baseUrl: channel.baseUrl.replace(/\/+$/, ""),
+    bearerToken: channel.apiKey,
+    imageModel: channel.model,
     imageConcurrency: settings.imageConcurrency,
-  };
+  }));
 }
 
 async function getFreshOpenAIAccessToken(
@@ -356,7 +401,8 @@ async function readModelResponse(
 ): Promise<unknown> {
   if (!response.ok) {
     const text = await response.text();
-    const message = formatModelError(response.status, text, fallback);
+    const messagePrefix = settings.channelName ? `${settings.channelName}：` : "";
+    const message = `${messagePrefix}${formatModelError(response.status, text, fallback)}`;
     if (settings.provider === "openai_oauth" && response.status === 401 && settings.oauthAccountId) {
       updateOpenAIOAuthAccountStatus(settings.oauthAccountId, "error", message);
     }
@@ -495,4 +541,8 @@ function requestSignal(signal?: AbortSignal): AbortSignal {
     return timeoutSignal;
   }
   return AbortSignal.any([signal, timeoutSignal]);
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
 }

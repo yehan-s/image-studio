@@ -1,10 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Activity,
   AlertTriangle,
   BarChart3,
+  Ban,
+  CheckCircle2,
   Clock,
   DollarSign,
   Gauge,
@@ -14,14 +16,19 @@ import {
   ShieldCheck,
   Terminal,
   TrendingUp,
+  Trash2,
+  UserCheck,
   UserPlus,
+  UserX,
   Users,
 } from "lucide-react";
 import clsx from "clsx";
 import type {
   AdminStats,
+  CurrentUser,
   ImageProvider,
   PublicAdminSettings,
+  PublicImageProviderChannel,
   PublicOpenAIOAuthAccount,
   PublicUser,
   PublicUserGroup,
@@ -80,6 +87,14 @@ interface UserResponse {
   user: PublicUser;
 }
 
+interface MeResponse {
+  user: CurrentUser | null;
+}
+
+type EditableImageProviderChannel = PublicImageProviderChannel & {
+  apiKey: string;
+};
+
 export function AdminClient() {
   const [stats, setStats] = useState<AdminStats | null>(null);
   const [settings, setSettings] = useState<PublicAdminSettings | null>(null);
@@ -87,6 +102,7 @@ export function AdminClient() {
   const [imageProvider, setImageProvider] = useState<ImageProvider>("sub2api");
   const [baseUrl, setBaseUrl] = useState("");
   const [imageModel, setImageModel] = useState("");
+  const [providerChannels, setProviderChannels] = useState<EditableImageProviderChannel[]>([]);
   const [promptOptimizerModel, setPromptOptimizerModel] = useState("gpt-5.5");
   const [imageConcurrency, setImageConcurrency] = useState(2);
   const [imageRetentionDays, setImageRetentionDays] = useState(0);
@@ -98,6 +114,7 @@ export function AdminClient() {
   const [groups, setGroups] = useState<PublicUserGroup[]>([]);
   const [users, setUsers] = useState<PublicUser[]>([]);
   const [openAIAccounts, setOpenAIAccounts] = useState<PublicOpenAIOAuthAccount[]>([]);
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
   const [systemUpdate, setSystemUpdate] = useState<SystemUpdateInfo | null>(null);
   const [webUpdateTask, setWebUpdateTask] = useState<WebUpdateTask | null>(null);
   const [updateError, setUpdateError] = useState("");
@@ -117,6 +134,8 @@ export function AdminClient() {
   const [newUserRole, setNewUserRole] = useState<PublicUser["role"]>("member");
   const [newUserGroupId, setNewUserGroupId] = useState("");
   const [newUserQuota, setNewUserQuota] = useState(100);
+  const [userSearch, setUserSearch] = useState("");
+  const [userStatusFilter, setUserStatusFilter] = useState<"all" | PublicUser["status"]>("all");
   const [error, setError] = useState("");
   const [settingsMessage, setSettingsMessage] = useState("");
   const [accountMessage, setAccountMessage] = useState("");
@@ -146,6 +165,22 @@ export function AdminClient() {
     setImageProvider(payload.settings.imageProvider);
     setBaseUrl(payload.settings.sub2apiBaseUrl);
     setImageModel(payload.settings.imageModel);
+    setProviderChannels(
+      payload.settings.imageProviderChannels.length > 0
+        ? payload.settings.imageProviderChannels.map((channel) => ({ ...channel, apiKey: "" }))
+        : [{
+            id: "legacy_sub2api",
+            name: "默认 API Key 渠道",
+            enabled: true,
+            priority: 1,
+            baseUrl: payload.settings.sub2apiBaseUrl,
+            model: payload.settings.imageModel,
+            apiKeyConfigured: payload.settings.sub2apiApiKeyConfigured,
+            apiKey: "",
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          }],
+    );
     setPromptOptimizerModel(payload.settings.promptOptimizerModel);
     setImageConcurrency(payload.settings.imageConcurrency);
     setImageRetentionDays(payload.settings.imageRetentionDays);
@@ -168,6 +203,11 @@ export function AdminClient() {
     setGroups(groupsPayload.groups);
     setUsers(usersPayload.users);
     setOpenAIAccounts(openAIPayload.accounts);
+  }
+
+  async function loadCurrentUser(): Promise<void> {
+    const payload = await apiJson<MeResponse>("/api/auth/me");
+    setCurrentUser(payload.user);
   }
 
   async function loadSystemUpdate(): Promise<void> {
@@ -353,6 +393,15 @@ export function AdminClient() {
         imageProvider?: ImageProvider;
         sub2apiApiKey?: string;
         sub2apiBaseUrl?: string;
+        imageProviderChannels?: Array<{
+          id?: string;
+          name: string;
+          enabled: boolean;
+          priority: number;
+          baseUrl: string;
+          model: string;
+          apiKey?: string | null;
+        }>;
         imageModel?: string;
         promptOptimizerModel?: string;
         imageConcurrency?: number;
@@ -377,6 +426,15 @@ export function AdminClient() {
       if (!isOpenAIOAuthProvider) {
         body.sub2apiBaseUrl = baseUrl;
         body.imageModel = imageModel;
+        body.imageProviderChannels = providerChannels.map((channel) => ({
+          id: channel.id,
+          name: channel.name,
+          enabled: channel.enabled,
+          priority: channel.priority,
+          baseUrl: channel.baseUrl,
+          model: channel.model,
+          apiKey: channel.apiKey.trim() ? channel.apiKey.trim() : null,
+        }));
       }
 
       if (!isOpenAIOAuthProvider && apiKey.trim()) {
@@ -388,6 +446,9 @@ export function AdminClient() {
       });
       setSettings(payload.settings);
       setImageProvider(payload.settings.imageProvider);
+      setBaseUrl(payload.settings.sub2apiBaseUrl);
+      setImageModel(payload.settings.imageModel);
+      setProviderChannels(payload.settings.imageProviderChannels.map((channel) => ({ ...channel, apiKey: "" })));
       setPromptOptimizerModel(payload.settings.promptOptimizerModel);
       setImageConcurrency(payload.settings.imageConcurrency);
       setImageRetentionDays(payload.settings.imageRetentionDays);
@@ -460,6 +521,7 @@ export function AdminClient() {
         body: JSON.stringify({
           name: user.name,
           role: user.role,
+          status: user.status,
           groupId: user.groupId,
           monthlyQuota: user.quotaOverride ?? user.monthlyQuota ?? 0,
         }),
@@ -468,6 +530,58 @@ export function AdminClient() {
       setAccountMessage("账号已保存。");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "账号保存失败");
+    } finally {
+      setAccountsSaving(false);
+    }
+  }
+
+  async function setUserStatus(user: PublicUser, status: PublicUser["status"]): Promise<void> {
+    const label = status === "disabled" ? "禁用" : "启用";
+    if (status === "disabled") {
+      const confirmed = window.confirm(`确定禁用账号「${user.name}」吗？禁用后该用户无法登录，也无法继续调用接口。`);
+      if (!confirmed) {
+        return;
+      }
+    }
+
+    setAccountsSaving(true);
+    setAccountMessage("");
+    setError("");
+    try {
+      const payload = await apiJson<UserResponse>(`/api/admin/users/${user.id}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          name: user.name,
+          role: user.role,
+          status,
+          groupId: user.groupId,
+          monthlyQuota: user.quotaOverride ?? user.monthlyQuota ?? 0,
+        }),
+      });
+      setUsers((current) => current.map((item) => (item.id === payload.user.id ? payload.user : item)));
+      setAccountMessage(`账号已${label}。`);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : `账号${label}失败`);
+    } finally {
+      setAccountsSaving(false);
+    }
+  }
+
+  async function deleteUserAccount(user: PublicUser): Promise<void> {
+    const confirmed = window.confirm(`确定删除账号「${user.name}」吗？该操作会移除账号和登录会话，历史图片仍保留为已删除用户记录。`);
+    if (!confirmed) {
+      return;
+    }
+
+    setAccountsSaving(true);
+    setAccountMessage("");
+    setError("");
+    try {
+      await apiJson(`/api/admin/users/${user.id}`, { method: "DELETE" });
+      setUsers((current) => current.filter((item) => item.id !== user.id));
+      setAccountMessage("账号已删除。");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "账号删除失败");
     } finally {
       setAccountsSaving(false);
     }
@@ -503,10 +617,46 @@ export function AdminClient() {
     }
   }
 
+  function updateProviderChannel(id: string, patch: Partial<EditableImageProviderChannel>): void {
+    setProviderChannels((current) =>
+      current.map((channel) => (channel.id === id ? { ...channel, ...patch } : channel)),
+    );
+  }
+
+  function addProviderChannel(): void {
+    const now = new Date().toISOString();
+    setProviderChannels((current) => [
+      ...current,
+      {
+        id: `draft_${crypto.randomUUID()}`,
+        name: `备用渠道 ${current.length + 1}`,
+        enabled: true,
+        priority: current.length + 1,
+        baseUrl: baseUrl || "https://s2a.laolin.ai/v1",
+        model: imageModel || "gpt-image-2",
+        apiKeyConfigured: false,
+        apiKey: "",
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
+  }
+
+  function removeProviderChannel(id: string): void {
+    setProviderChannels((current) => {
+      if (current.length <= 1) {
+        setError("至少需要保留一个模型渠道。");
+        return current;
+      }
+      return current.filter((channel) => channel.id !== id).map((channel, index) => ({ ...channel, priority: index + 1 }));
+    });
+  }
+
   useEffect(() => {
     loadStats().catch((caught: Error) => setError(caught.message));
     loadSettings().catch((caught: Error) => setError(caught.message));
     loadAccounts().catch((caught: Error) => setError(caught.message));
+    loadCurrentUser().catch((caught: Error) => setError(caught.message));
     loadSystemUpdate().catch((caught: Error) => setUpdateError(caught.message));
     loadWebUpdateStatus().catch((caught: Error) => setUpdateError(caught.message));
     const timer = window.setInterval(() => {
@@ -524,6 +674,31 @@ export function AdminClient() {
     }, 2_000);
     return () => window.clearInterval(timer);
   }, [webUpdateTask?.status]);
+
+  const userSummary = useMemo(() => {
+    return users.reduce(
+      (summary, user) => {
+        summary.total += 1;
+        summary[user.status] += 1;
+        summary[user.role] += 1;
+        return summary;
+      },
+      { total: 0, active: 0, disabled: 0, admin: 0, member: 0 },
+    );
+  }, [users]);
+
+  const filteredUsers = useMemo(() => {
+    const keyword = userSearch.trim().toLowerCase();
+    return users.filter((user) => {
+      const matchesStatus = userStatusFilter === "all" || user.status === userStatusFilter;
+      const matchesKeyword =
+        keyword.length === 0 ||
+        user.name.toLowerCase().includes(keyword) ||
+        user.email.toLowerCase().includes(keyword) ||
+        (user.groupName ?? "").toLowerCase().includes(keyword);
+      return matchesStatus && matchesKeyword;
+    });
+  }, [userSearch, userStatusFilter, users]);
 
   const displayStats: AdminStats = stats ?? {
     today: { totalTasks: 0, succeededTasks: 0, failedTasks: 0, totalImages: 0, estimatedCost: 0 },
@@ -551,6 +726,7 @@ export function AdminClient() {
       <section className="page-heading">
         <div>
           <h1>管理员后台</h1>
+          <p>集中管理模型健康、系统更新、账号权限、分组额度和站点配置。</p>
         </div>
         <button className="button" type="button" onClick={loadStats} disabled={loading}>
           <RefreshCw size={16} aria-hidden="true" />
@@ -574,397 +750,514 @@ export function AdminClient() {
             <StatCard label="当前并发" value={displayStats.health.imageConcurrency} icon={<Gauge size={18} />} />
           </section>
 
-          <section className="panel" style={{ marginTop: "1rem" }}>
-            <div className="panel-header">
-              <div>
-                <h2>模型健康</h2>
-              </div>
-              <span className={clsx("badge", displayStats.health.timeoutStreak > 0 ? "warning" : "success")}>
-                连续超时 {displayStats.health.timeoutStreak}
-              </span>
-            </div>
-            <div className="panel-body popular-list">
-              <div className="popular-row">
-                <strong>接口模式</strong>
-                <span className="badge">{displayStats.health.provider === "openai_oauth" ? "内置 OAuth" : "API Key"}</span>
-              </div>
-              <div className="popular-row">
-                <strong>Base URL</strong>
-                <span>{displayStats.health.baseUrl}</span>
-              </div>
-              <div className="popular-row">
-                <strong>模型</strong>
-                <span>{displayStats.health.imageModel}</span>
-              </div>
-              <div className="popular-row">
-                <strong>失败率</strong>
-                <span className={clsx("badge", displayStats.health.failureRate > 20 ? "danger" : displayStats.health.failureRate > 0 ? "warning" : "success")}>
-                  {displayStats.health.failureRate}%
+          <div className="admin-dashboard-grid">
+            <section className="panel">
+              <div className="panel-header">
+                <div>
+                  <h2>模型健康</h2>
+                </div>
+                <span className={clsx("badge", displayStats.health.timeoutStreak > 0 ? "warning" : "success")}>
+                  连续超时 {displayStats.health.timeoutStreak}
                 </span>
               </div>
-              {displayStats.health.autoDegradedAt ? (
+              <div className="panel-body popular-list">
                 <div className="popular-row">
-                  <strong>最近自动降并发</strong>
-                  <span>{new Date(displayStats.health.autoDegradedAt).toLocaleString()}</span>
+                  <strong>接口模式</strong>
+                  <span className="badge">{displayStats.health.provider === "openai_oauth" ? "内置 OAuth" : "API Key"}</span>
                 </div>
-              ) : null}
-            </div>
-          </section>
+                <div className="popular-row">
+                  <strong>Base URL</strong>
+                  <span>{displayStats.health.baseUrl}</span>
+                </div>
+                <div className="popular-row">
+                  <strong>模型</strong>
+                  <span>{displayStats.health.imageModel}</span>
+                </div>
+                <div className="popular-row">
+                  <strong>失败率</strong>
+                  <span className={clsx("badge", displayStats.health.failureRate > 20 ? "danger" : displayStats.health.failureRate > 0 ? "warning" : "success")}>
+                    {displayStats.health.failureRate}%
+                  </span>
+                </div>
+                {displayStats.health.autoDegradedAt ? (
+                  <div className="popular-row">
+                    <strong>最近自动降并发</strong>
+                    <span>{new Date(displayStats.health.autoDegradedAt).toLocaleString()}</span>
+                  </div>
+                ) : null}
+              </div>
+            </section>
 
-          <section className="panel" style={{ marginTop: "1rem" }}>
-            <div className="panel-header">
-              <div>
-                <h2>系统更新</h2>
-              </div>
-              <span className={clsx("badge", systemUpdate?.updateAvailable ? "warning" : "success")}>
-                {systemUpdate?.updateAvailable ? "发现新版本" : "当前已是最新"}
-              </span>
-            </div>
-            <div className="panel-body form-stack">
-              <div className="field-row">
-                <div className="field">
-                  <label>当前版本</label>
-                  <span className="badge">v{systemUpdate?.currentVersion ?? "检测中"}</span>
+            <section className="panel">
+              <div className="panel-header">
+                <div>
+                  <h2>系统更新</h2>
                 </div>
+                <span className={clsx("badge", systemUpdate?.updateAvailable ? "warning" : "success")}>
+                  {systemUpdate?.updateAvailable ? "发现新版本" : "当前已是最新"}
+                </span>
+              </div>
+              <div className="panel-body form-stack">
+                <div className="field-row">
+                  <div className="field">
+                    <label>当前版本</label>
+                    <span className="badge">v{systemUpdate?.currentVersion ?? "检测中"}</span>
+                  </div>
+                  <div className="field">
+                    <label>最新版本</label>
+                    <span className="badge">{systemUpdate?.latestTag ?? "暂未获取"}</span>
+                  </div>
+                </div>
+                <div className="field-row">
+                  <div className="field">
+                    <label>发布时间</label>
+                    <span>{systemUpdate?.publishedAt ? new Date(systemUpdate.publishedAt).toLocaleString() : "暂未获取"}</span>
+                  </div>
+                  <div className="field">
+                    <label>更新源</label>
+                    <span>{systemUpdate?.updateRepo ?? "laolin5564/canvas-realm-gpt-image-2-studio"}</span>
+                  </div>
+                </div>
+                {systemUpdate?.releaseNotesUrl ? (
+                  <a className="button subtle" href={systemUpdate.releaseNotesUrl} target="_blank" rel="noreferrer">
+                    查看 Release Notes
+                  </a>
+                ) : null}
                 <div className="field">
-                  <label>最新版本</label>
-                  <span className="badge">{systemUpdate?.latestTag ?? "暂未获取"}</span>
+                  <label>推荐更新命令</label>
+                  <code className="command-box">{systemUpdate?.updateCommand ?? "WEB_UPDATE_ENABLED=true bash scripts/web-update.sh"}</code>
+                </div>
+                <div className="field-row">
+                  <div className="field">
+                    <label>Web 一键更新</label>
+                    <span className={clsx("badge", webUpdateTask?.enabled ? "success" : "warning")}>{webUpdateTask?.enabled ? "已启用" : "未启用"}</span>
+                    {webUpdateTask?.enabledReason ? <small>{webUpdateTask.enabledReason}</small> : null}
+                  </div>
+                  <div className="field">
+                    <label>任务状态</label>
+                    <span className={clsx("badge", webUpdateTask?.status === "failed" ? "danger" : webUpdateTask?.status === "running" ? "warning" : "success")}>{webUpdateTask?.status ?? "idle"}</span>
+                    <small>
+                      {webUpdateTask?.startedAt ? `开始：${new Date(webUpdateTask.startedAt).toLocaleString()}` : "尚未执行"}
+                      {webUpdateTask?.finishedAt ? `；结束：${new Date(webUpdateTask.finishedAt).toLocaleString()}` : ""}
+                    </small>
+                  </div>
+                </div>
+                <div className="section-title-row">
+                  <button className="button" type="button" onClick={loadSystemUpdate} disabled={updateChecking}>
+                    <RefreshCw size={16} aria-hidden="true" />
+                    {updateChecking ? "检查中" : "检查更新"}
+                  </button>
+                  <button className="button" type="button" onClick={() => loadWebUpdateStatus().catch((caught: Error) => setUpdateError(caught.message))}>
+                    <RefreshCw size={16} aria-hidden="true" />
+                    刷新更新状态
+                  </button>
+                  <button className="button primary" type="button" onClick={runWebUpdate} disabled={!webUpdateTask?.enabled || webUpdateTask.status === "running" || updateRunning}>
+                    <ShieldCheck size={16} aria-hidden="true" />
+                    {webUpdateTask?.status === "running" || updateRunning ? "更新中" : "立即更新"}
+                  </button>
+                  <button className="button primary" type="button" onClick={copyUpdateCommand} disabled={!systemUpdate}>
+                    <Terminal size={16} aria-hidden="true" />
+                    复制更新命令
+                  </button>
+                </div>
+                {updateError ? <div className="toast-line error">{updateError}</div> : null}
+                <div className="toast-line">{updateMessage}</div>
+                {webUpdateTask?.error ? <div className="toast-line error">{webUpdateTask.error}</div> : null}
+                <div className="field">
+                  <label>更新日志</label>
+                  <pre className="command-box update-log">{webUpdateTask?.logs.length ? webUpdateTask.logs.join("\n") : "暂无更新日志"}</pre>
                 </div>
               </div>
-              <div className="field-row">
-                <div className="field">
-                  <label>发布时间</label>
-                  <span>{systemUpdate?.publishedAt ? new Date(systemUpdate.publishedAt).toLocaleString() : "暂未获取"}</span>
-                </div>
-                <div className="field">
-                  <label>更新源</label>
-                  <span>{systemUpdate?.updateRepo ?? "laolin5564/canvas-realm-gpt-image-2-studio"}</span>
-                </div>
-              </div>
-              {systemUpdate?.releaseNotesUrl ? (
-                <a className="button subtle" href={systemUpdate.releaseNotesUrl} target="_blank" rel="noreferrer">
-                  查看 Release Notes
-                </a>
-              ) : null}
-              <div className="field">
-                <label>推荐更新命令</label>
-                <code className="command-box">{systemUpdate?.updateCommand ?? "WEB_UPDATE_ENABLED=true bash scripts/web-update.sh"}</code>
-              </div>
-              <div className="field-row">
-                <div className="field">
-                  <label>Web 一键更新</label>
-                  <span className={clsx("badge", webUpdateTask?.enabled ? "success" : "warning")}>{webUpdateTask?.enabled ? "已启用" : "未启用"}</span>
-                  {webUpdateTask?.enabledReason ? <small>{webUpdateTask.enabledReason}</small> : null}
-                </div>
-                <div className="field">
-                  <label>任务状态</label>
-                  <span className={clsx("badge", webUpdateTask?.status === "failed" ? "danger" : webUpdateTask?.status === "running" ? "warning" : "success")}>{webUpdateTask?.status ?? "idle"}</span>
-                  <small>
-                    {webUpdateTask?.startedAt ? `开始：${new Date(webUpdateTask.startedAt).toLocaleString()}` : "尚未执行"}
-                    {webUpdateTask?.finishedAt ? `；结束：${new Date(webUpdateTask.finishedAt).toLocaleString()}` : ""}
-                  </small>
-                </div>
-              </div>
-              <div className="section-title-row">
-                <button className="button" type="button" onClick={loadSystemUpdate} disabled={updateChecking}>
-                  <RefreshCw size={16} aria-hidden="true" />
-                  {updateChecking ? "检查中" : "检查更新"}
-                </button>
-                <button className="button" type="button" onClick={() => loadWebUpdateStatus().catch((caught: Error) => setUpdateError(caught.message))}>
-                  <RefreshCw size={16} aria-hidden="true" />
-                  刷新更新状态
-                </button>
-                <button className="button primary" type="button" onClick={runWebUpdate} disabled={!webUpdateTask?.enabled || webUpdateTask.status === "running" || updateRunning}>
-                  <ShieldCheck size={16} aria-hidden="true" />
-                  {webUpdateTask?.status === "running" || updateRunning ? "更新中" : "立即更新"}
-                </button>
-                <button className="button primary" type="button" onClick={copyUpdateCommand} disabled={!systemUpdate}>
-                  <Terminal size={16} aria-hidden="true" />
-                  复制更新命令
-                </button>
-              </div>
-              {updateError ? <div className="toast-line error">{updateError}</div> : null}
-              <div className="toast-line">{updateMessage}</div>
-              {webUpdateTask?.error ? <div className="toast-line error">{webUpdateTask.error}</div> : null}
-              <div className="field">
-                <label>更新日志</label>
-                <pre className="command-box update-log">{webUpdateTask?.logs.length ? webUpdateTask.logs.join("\n") : "暂无更新日志"}</pre>
-              </div>
-            </div>
-          </section>
+            </section>
+          </div>
 
-          <section className="panel" style={{ marginTop: "1rem" }}>
+          <section className="panel admin-account-panel" style={{ marginTop: "1rem" }}>
             <div className="panel-header">
               <div>
                 <h2>账号与分组</h2>
               </div>
               <span className="badge">
                 <Users size={13} aria-hidden="true" />
-                {users.length} 个账号
+                {userSummary.total} 个账号
               </span>
             </div>
             <div className="panel-body form-stack">
-              <div className="admin-subsection">
-                <div className="section-title-row">
-                  <strong>分组限额</strong>
-                  <span className="badge">按月统计</span>
+              <div className="admin-account-metrics" aria-label="账号概览">
+                <div>
+                  <span>可用账号</span>
+                  <strong>{userSummary.active}</strong>
                 </div>
-                <div className="admin-grid admin-grid-groups">
-                  <div className="admin-grid-head">分组</div>
-                  <div className="admin-grid-head">每月次数</div>
-                  <div className="admin-grid-head">操作</div>
-                  {groups.map((group) => (
-                    <div className="admin-grid-row" key={group.id}>
-                      <input
-                        className="input"
-                        value={group.name}
-                        onChange={(event) =>
-                          setGroups((current) =>
-                            current.map((item) =>
-                              item.id === group.id ? { ...item, name: event.target.value } : item,
-                            ),
-                          )
-                        }
-                      />
-                      <input
-                        className="input"
-                        type="number"
-                        min={0}
-                        value={group.monthlyQuota}
-                        onChange={(event) =>
-                          setGroups((current) =>
-                            current.map((item) =>
-                              item.id === group.id
-                                ? { ...item, monthlyQuota: Number(event.target.value) }
-                                : item,
-                            ),
-                          )
-                        }
-                      />
-                      <button
-                        className="button"
-                        type="button"
-                        onClick={() => saveGroup(group)}
-                        disabled={accountsSaving}
-                      >
-                        <Save size={16} aria-hidden="true" />
-                        保存
-                      </button>
-                    </div>
-                  ))}
-                  <div className="admin-grid-row new-row">
-                    <input
-                      className="input"
-                      value={newGroupName}
-                      onChange={(event) => setNewGroupName(event.target.value)}
-                      placeholder="新分组名称"
-                    />
-                    <input
-                      className="input"
-                      type="number"
-                      min={0}
-                      value={newGroupQuota}
-                      onChange={(event) => setNewGroupQuota(Number(event.target.value))}
-                    />
-                    <button
-                      className="button primary"
-                      type="button"
-                      onClick={createGroup}
-                      disabled={accountsSaving || !newGroupName.trim()}
-                    >
-                      <ShieldCheck size={16} aria-hidden="true" />
-                      新建
-                    </button>
-                  </div>
+                <div>
+                  <span>已禁用</span>
+                  <strong>{userSummary.disabled}</strong>
+                </div>
+                <div>
+                  <span>管理员</span>
+                  <strong>{userSummary.admin}</strong>
+                </div>
+                <div>
+                  <span>普通成员</span>
+                  <strong>{userSummary.member}</strong>
                 </div>
               </div>
 
-              <div className="admin-subsection">
-                <div className="section-title-row">
-                  <strong>账号管理</strong>
-                  <span className="badge">已用 / 限额</span>
-                </div>
-                <details className="admin-create-user-details">
-                  <summary>
-                    <UserPlus size={16} aria-hidden="true" />
-                    新增账号
-                  </summary>
-                  <div className="admin-create-user">
-                    <div className="field">
-                      <label htmlFor="newUserName">名称</label>
-                      <input
-                        id="newUserName"
-                        className="input"
-                        value={newUserName}
-                        onChange={(event) => setNewUserName(event.target.value)}
-                        placeholder="成员名称"
-                      />
-                    </div>
-                    <div className="field">
-                      <label htmlFor="newUserEmail">邮箱</label>
-                      <input
-                        id="newUserEmail"
-                        className="input"
-                        type="email"
-                        value={newUserEmail}
-                        onChange={(event) => setNewUserEmail(event.target.value)}
-                        placeholder="name@example.com"
-                      />
-                    </div>
-                    <div className="field">
-                      <label htmlFor="newUserPassword">初始密码</label>
-                      <input
-                        id="newUserPassword"
-                        className="input"
-                        type="password"
-                        value={newUserPassword}
-                        onChange={(event) => setNewUserPassword(event.target.value)}
-                        placeholder="至少 8 位"
-                        autoComplete="new-password"
-                      />
-                    </div>
-                    <div className="field">
-                      <label htmlFor="newUserRole">角色</label>
-                      <select
-                        id="newUserRole"
-                        className="select"
-                        value={newUserRole}
-                        onChange={(event) => setNewUserRole(event.target.value as PublicUser["role"])}
-                      >
-                        <option value="member">成员</option>
-                        <option value="admin">管理员</option>
-                      </select>
-                    </div>
-                    <div className="field">
-                      <label htmlFor="newUserGroup">分组</label>
-                      <select
-                        id="newUserGroup"
-                        className="select"
-                        value={newUserGroupId}
-                        onChange={(event) => setNewUserGroupId(event.target.value)}
-                      >
-                        <option value="">无分组</option>
-                        {groups.map((group) => (
-                          <option key={group.id} value={group.id}>
-                            {group.name}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="field">
-                      <label htmlFor="newUserQuota">额度</label>
-                      <input
-                        id="newUserQuota"
-                        className="input"
-                        type="number"
-                        min={0}
-                        value={newUserQuota}
-                        onChange={(event) => setNewUserQuota(Number(event.target.value))}
-                      />
-                    </div>
-                    <button
-                      className="button primary"
-                      type="button"
-                      onClick={createUser}
-                      disabled={accountsSaving || !newUserName.trim() || !newUserEmail.trim() || newUserPassword.length < 8}
-                    >
-                      <UserPlus size={16} aria-hidden="true" />
-                      创建
-                    </button>
+              <div className="admin-account-layout">
+                <div className="admin-subsection">
+                  <div className="section-title-row">
+                    <strong>分组限额</strong>
+                    <span className="badge">按月统计</span>
                   </div>
-                </details>
-                <div className="admin-grid admin-grid-users">
-                  <div className="admin-grid-head">账号</div>
-                  <div className="admin-grid-head">角色</div>
-                  <div className="admin-grid-head">分组</div>
-                  <div className="admin-grid-head">账号额度</div>
-                  <div className="admin-grid-head">用量</div>
-                  <div className="admin-grid-head">操作</div>
-                  {users.map((user) => (
-                    <div className="admin-grid-row" key={user.id}>
-                      <div className="field compact-field">
+                  <div className="admin-grid admin-grid-groups">
+                    <div className="admin-grid-head">分组</div>
+                    <div className="admin-grid-head">每月次数</div>
+                    <div className="admin-grid-head">操作</div>
+                    {groups.map((group) => (
+                      <div className="admin-grid-row" key={group.id}>
                         <input
                           className="input"
-                          value={user.name}
+                          value={group.name}
                           onChange={(event) =>
-                            setUsers((current) =>
+                            setGroups((current) =>
                               current.map((item) =>
-                                item.id === user.id ? { ...item, name: event.target.value } : item,
+                                item.id === group.id ? { ...item, name: event.target.value } : item,
                               ),
                             )
                           }
                         />
-                        <small>{user.email}</small>
+                        <input
+                          className="input"
+                          type="number"
+                          min={0}
+                          value={group.monthlyQuota}
+                          onChange={(event) =>
+                            setGroups((current) =>
+                              current.map((item) =>
+                                item.id === group.id
+                                  ? { ...item, monthlyQuota: Number(event.target.value) }
+                                  : item,
+                              ),
+                            )
+                          }
+                        />
+                        <button
+                          className="button"
+                          type="button"
+                          onClick={() => saveGroup(group)}
+                          disabled={accountsSaving}
+                        >
+                          <Save size={16} aria-hidden="true" />
+                          保存
+                        </button>
                       </div>
-                      <select
-                        className="select"
-                        value={user.role}
-                        onChange={(event) =>
-                          setUsers((current) =>
-                            current.map((item) =>
-                              item.id === user.id
-                                ? { ...item, role: event.target.value as PublicUser["role"] }
-                                : item,
-                            ),
-                          )
-                        }
-                      >
-                        <option value="member">成员</option>
-                        <option value="admin">管理员</option>
-                      </select>
-                      <select
-                        className="select"
-                        value={user.groupId ?? ""}
-                        onChange={(event) =>
-                          setUsers((current) =>
-                            current.map((item) =>
-                              item.id === user.id ? { ...item, groupId: event.target.value || null } : item,
-                            ),
-                          )
-                        }
-                      >
-                        <option value="">无分组</option>
-                        {groups.map((group) => (
-                          <option key={group.id} value={group.id}>
-                            {group.name}
-                          </option>
-                        ))}
-                      </select>
+                    ))}
+                    <div className="admin-grid-row new-row">
+                      <input
+                        className="input"
+                        value={newGroupName}
+                        onChange={(event) => setNewGroupName(event.target.value)}
+                        placeholder="新分组名称"
+                      />
                       <input
                         className="input"
                         type="number"
                         min={0}
-                        value={user.monthlyQuota ?? 0}
-                        onChange={(event) =>
-                          setUsers((current) =>
-                            current.map((item) =>
-                              item.id === user.id
-                                ? {
-                                    ...item,
-                                    quotaOverride: Number(event.target.value),
-                                    monthlyQuota: Number(event.target.value),
-                                  }
-                                : item,
-                            ),
-                          )
-                        }
+                        value={newGroupQuota}
+                        onChange={(event) => setNewGroupQuota(Number(event.target.value))}
                       />
-                      <span className="badge">
-                        {user.monthUsed}/{user.monthlyQuota ?? "不限"}
-                      </span>
                       <button
-                        className="button"
+                        className="button primary"
                         type="button"
-                        onClick={() => saveUser(user)}
-                        disabled={accountsSaving}
+                        onClick={createGroup}
+                        disabled={accountsSaving || !newGroupName.trim()}
                       >
-                        <Save size={16} aria-hidden="true" />
-                        保存
+                        <ShieldCheck size={16} aria-hidden="true" />
+                        新建
                       </button>
                     </div>
-                  ))}
+                  </div>
                 </div>
-                <div className="toast-line">{accountMessage}</div>
+
+                <div className="admin-subsection">
+                  <div className="section-title-row">
+                    <strong>账号管理</strong>
+                    <span className="badge">已用 / 限额</span>
+                  </div>
+                  <details className="admin-create-user-details">
+                    <summary>
+                      <UserPlus size={16} aria-hidden="true" />
+                      新增账号
+                    </summary>
+                    <div className="admin-create-user">
+                      <div className="field">
+                        <label htmlFor="newUserName">名称</label>
+                        <input
+                          id="newUserName"
+                          className="input"
+                          value={newUserName}
+                          onChange={(event) => setNewUserName(event.target.value)}
+                          placeholder="成员名称"
+                        />
+                      </div>
+                      <div className="field">
+                        <label htmlFor="newUserEmail">邮箱</label>
+                        <input
+                          id="newUserEmail"
+                          className="input"
+                          type="email"
+                          value={newUserEmail}
+                          onChange={(event) => setNewUserEmail(event.target.value)}
+                          placeholder="name@example.com"
+                        />
+                      </div>
+                      <div className="field">
+                        <label htmlFor="newUserPassword">初始密码</label>
+                        <input
+                          id="newUserPassword"
+                          className="input"
+                          type="password"
+                          value={newUserPassword}
+                          onChange={(event) => setNewUserPassword(event.target.value)}
+                          placeholder="至少 8 位"
+                          autoComplete="new-password"
+                        />
+                      </div>
+                      <div className="field">
+                        <label htmlFor="newUserRole">角色</label>
+                        <select
+                          id="newUserRole"
+                          className="select"
+                          value={newUserRole}
+                          onChange={(event) => setNewUserRole(event.target.value as PublicUser["role"])}
+                        >
+                          <option value="member">成员</option>
+                          <option value="admin">管理员</option>
+                        </select>
+                      </div>
+                      <div className="field">
+                        <label htmlFor="newUserGroup">分组</label>
+                        <select
+                          id="newUserGroup"
+                          className="select"
+                          value={newUserGroupId}
+                          onChange={(event) => setNewUserGroupId(event.target.value)}
+                        >
+                          <option value="">无分组</option>
+                          {groups.map((group) => (
+                            <option key={group.id} value={group.id}>
+                              {group.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="field">
+                        <label htmlFor="newUserQuota">额度</label>
+                        <input
+                          id="newUserQuota"
+                          className="input"
+                          type="number"
+                          min={0}
+                          value={newUserQuota}
+                          onChange={(event) => setNewUserQuota(Number(event.target.value))}
+                        />
+                      </div>
+                      <button
+                        className="button primary"
+                        type="button"
+                        onClick={createUser}
+                        disabled={accountsSaving || !newUserName.trim() || !newUserEmail.trim() || newUserPassword.length < 8}
+                      >
+                        <UserPlus size={16} aria-hidden="true" />
+                        创建账号
+                      </button>
+                    </div>
+                  </details>
+
+                  <div className="admin-user-toolbar">
+                    <input
+                      className="input"
+                      value={userSearch}
+                      onChange={(event) => setUserSearch(event.target.value)}
+                      placeholder="搜索名称、邮箱或分组"
+                    />
+                    <select
+                      className="select"
+                      value={userStatusFilter}
+                      onChange={(event) => setUserStatusFilter(event.target.value as typeof userStatusFilter)}
+                    >
+                      <option value="all">全部状态</option>
+                      <option value="active">可用账号</option>
+                      <option value="disabled">已禁用</option>
+                    </select>
+                  </div>
+
+                  <div className="admin-user-list">
+                    {filteredUsers.map((user) => {
+                      const isSelf = currentUser?.id === user.id;
+                      return (
+                        <article className={clsx("admin-user-card", user.status === "disabled" && "disabled")} key={user.id}>
+                          <div className="admin-user-card-main">
+                            <div className="admin-user-avatar" aria-hidden="true">
+                              {user.name.slice(0, 1).toUpperCase()}
+                            </div>
+                            <div className="admin-user-identity">
+                              <input
+                                className="input"
+                                value={user.name}
+                                onChange={(event) =>
+                                  setUsers((current) =>
+                                    current.map((item) =>
+                                      item.id === user.id ? { ...item, name: event.target.value } : item,
+                                    ),
+                                  )
+                                }
+                              />
+                              <div className="admin-user-meta-line">
+                                <span>{user.email}</span>
+                                {isSelf ? <span className="badge success">当前账号</span> : null}
+                                <span className={clsx("badge", user.status === "active" ? "success" : "danger")}>
+                                  {user.status === "active" ? (
+                                    <CheckCircle2 size={13} aria-hidden="true" />
+                                  ) : (
+                                    <Ban size={13} aria-hidden="true" />
+                                  )}
+                                  {user.status === "active" ? "可用" : "已禁用"}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="admin-user-fields">
+                            <div className="field">
+                              <label>角色</label>
+                              <select
+                                className="select"
+                                value={user.role}
+                                disabled={isSelf}
+                                onChange={(event) =>
+                                  setUsers((current) =>
+                                    current.map((item) =>
+                                      item.id === user.id
+                                        ? { ...item, role: event.target.value as PublicUser["role"] }
+                                        : item,
+                                    ),
+                                  )
+                                }
+                              >
+                                <option value="member">成员</option>
+                                <option value="admin">管理员</option>
+                              </select>
+                            </div>
+                            <div className="field">
+                              <label>分组</label>
+                              <select
+                                className="select"
+                                value={user.groupId ?? ""}
+                                onChange={(event) =>
+                                  setUsers((current) =>
+                                    current.map((item) =>
+                                      item.id === user.id ? { ...item, groupId: event.target.value || null } : item,
+                                    ),
+                                  )
+                                }
+                              >
+                                <option value="">无分组</option>
+                                {groups.map((group) => (
+                                  <option key={group.id} value={group.id}>
+                                    {group.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            <div className="field">
+                              <label>账号额度</label>
+                              <input
+                                className="input"
+                                type="number"
+                                min={0}
+                                value={user.monthlyQuota ?? 0}
+                                onChange={(event) =>
+                                  setUsers((current) =>
+                                    current.map((item) =>
+                                      item.id === user.id
+                                        ? {
+                                            ...item,
+                                            quotaOverride: Number(event.target.value),
+                                            monthlyQuota: Number(event.target.value),
+                                          }
+                                        : item,
+                                    ),
+                                  )
+                                }
+                              />
+                            </div>
+                          </div>
+
+                          <div className="admin-user-stats">
+                            <span>
+                              <strong>{user.monthUsed}</strong>
+                              <small>已用</small>
+                            </span>
+                            <span>
+                              <strong>{user.monthlyQuota ?? "不限"}</strong>
+                              <small>限额</small>
+                            </span>
+                            <span>
+                              <strong>{user.groupName ?? "无分组"}</strong>
+                              <small>当前分组</small>
+                            </span>
+                            <span>
+                              <strong>{new Date(user.createdAt).toLocaleDateString("zh-CN")}</strong>
+                              <small>注册时间</small>
+                            </span>
+                          </div>
+
+                          <div className="admin-user-actions">
+                            <button
+                              className="button"
+                              type="button"
+                              onClick={() => saveUser(user)}
+                              disabled={accountsSaving}
+                            >
+                              <Save size={16} aria-hidden="true" />
+                              保存
+                            </button>
+                            <button
+                              className="button"
+                              type="button"
+                              onClick={() => setUserStatus(user, user.status === "active" ? "disabled" : "active")}
+                              disabled={accountsSaving || isSelf}
+                            >
+                              {user.status === "active" ? (
+                                <UserX size={16} aria-hidden="true" />
+                              ) : (
+                                <UserCheck size={16} aria-hidden="true" />
+                              )}
+                              {user.status === "active" ? "禁用" : "启用"}
+                            </button>
+                            <button
+                              className="button danger"
+                              type="button"
+                              onClick={() => deleteUserAccount(user)}
+                              disabled={accountsSaving || isSelf}
+                            >
+                              <Trash2 size={16} aria-hidden="true" />
+                              删除
+                            </button>
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                  {filteredUsers.length === 0 ? (
+                    <div className="empty-state compact">
+                      <div>
+                        <strong>没有匹配账号</strong>
+                        <span>换个关键词或状态筛选再试。</span>
+                      </div>
+                    </div>
+                  ) : null}
+                  <div className="toast-line">{accountMessage}</div>
+                </div>
               </div>
             </div>
           </section>
@@ -1061,42 +1354,107 @@ export function AdminClient() {
                 </select>
               </div>
               {isOpenAIOAuthProvider ? null : (
-                <>
-                  <div className="field-row">
-                    <div className="field">
-                      <label htmlFor="sub2apiBaseUrl">Base URL</label>
-                      <input
-                        id="sub2apiBaseUrl"
-                        className="input"
-                        value={baseUrl}
-                        onChange={(event) => setBaseUrl(event.target.value)}
-                        placeholder="https://s2a.laolin.ai/v1"
-                      />
-                    </div>
-                    <div className="field">
-                      <label htmlFor="imageModel">模型</label>
-                      <input
-                        id="imageModel"
-                        className="input"
-                        value={imageModel}
-                        onChange={(event) => setImageModel(event.target.value)}
-                        placeholder="gpt-image-2"
-                      />
-                    </div>
+                <div className="provider-channel-section">
+                  <div className="section-title-row">
+                    <strong>模型渠道池</strong>
+                    <button className="button subtle" type="button" onClick={addProviderChannel}>
+                      <ShieldCheck size={16} aria-hidden="true" />
+                      增加渠道
+                    </button>
                   </div>
-                  <div className="field">
-                    <label htmlFor="sub2apiApiKey">API Key</label>
-                    <input
-                      id="sub2apiApiKey"
-                      className="input"
-                      type="password"
-                      value={apiKey}
-                      onChange={(event) => setApiKey(event.target.value)}
-                      placeholder={settings?.sub2apiApiKeyConfigured ? "留空表示不修改现有密钥" : "填写后保存"}
-                      autoComplete="off"
-                    />
+                  <div className="provider-channel-list">
+                    {providerChannels.map((channel, index) => (
+                      <article className={clsx("provider-channel-card", !channel.enabled && "disabled")} key={channel.id}>
+                        <div className="provider-channel-head">
+                          <label className="switch-row">
+                            <input
+                              type="checkbox"
+                              checked={channel.enabled}
+                              onChange={(event) => updateProviderChannel(channel.id, { enabled: event.target.checked })}
+                            />
+                            <span>
+                              <strong>{channel.name || `渠道 ${index + 1}`}</strong>
+                              <small>优先级 {channel.priority}</small>
+                            </span>
+                          </label>
+                          <span className={clsx("badge", channel.apiKeyConfigured || channel.apiKey ? "success" : "danger")}>
+                            {channel.apiKeyConfigured || channel.apiKey ? "Key 已配置" : "缺少 Key"}
+                          </span>
+                        </div>
+                        <div className="provider-channel-fields">
+                          <div className="field">
+                            <label>渠道名称</label>
+                            <input
+                              className="input"
+                              value={channel.name}
+                              onChange={(event) => updateProviderChannel(channel.id, { name: event.target.value })}
+                              placeholder="例如：主线路 / 备用线路"
+                            />
+                          </div>
+                          <div className="field">
+                            <label>优先级</label>
+                            <input
+                              className="input"
+                              type="number"
+                              min={1}
+                              value={channel.priority}
+                              onChange={(event) => updateProviderChannel(channel.id, { priority: Number(event.target.value) })}
+                            />
+                          </div>
+                          <div className="field">
+                            <label>Base URL</label>
+                            <input
+                              className="input"
+                              value={channel.baseUrl}
+                              onChange={(event) => {
+                                updateProviderChannel(channel.id, { baseUrl: event.target.value });
+                                if (index === 0) setBaseUrl(event.target.value);
+                              }}
+                              placeholder="https://s2a.laolin.ai/v1"
+                            />
+                          </div>
+                          <div className="field">
+                            <label>模型</label>
+                            <input
+                              className="input"
+                              value={channel.model}
+                              onChange={(event) => {
+                                updateProviderChannel(channel.id, { model: event.target.value });
+                                if (index === 0) setImageModel(event.target.value);
+                              }}
+                              placeholder="gpt-image-2"
+                            />
+                          </div>
+                          <div className="field">
+                            <label>API Key</label>
+                            <input
+                              className="input"
+                              type="password"
+                              value={channel.apiKey}
+                              onChange={(event) => {
+                                updateProviderChannel(channel.id, { apiKey: event.target.value });
+                                if (index === 0) setApiKey(event.target.value);
+                              }}
+                              placeholder={channel.apiKeyConfigured ? "留空表示不修改现有密钥" : "填写后保存"}
+                              autoComplete="off"
+                            />
+                          </div>
+                        </div>
+                        <div className="provider-channel-actions">
+                          <button
+                            className="button danger"
+                            type="button"
+                            onClick={() => removeProviderChannel(channel.id)}
+                            disabled={providerChannels.length <= 1}
+                          >
+                            <Trash2 size={16} aria-hidden="true" />
+                            移除
+                          </button>
+                        </div>
+                      </article>
+                    ))}
                   </div>
-                </>
+                </div>
               )}
               <div className="field">
                 <label htmlFor="imageConcurrency">并发请求数</label>

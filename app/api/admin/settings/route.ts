@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getPublicAdminSettings, getUserGroup, setAppSetting } from "@/lib/db";
+import { getPublicAdminSettings, getUserGroup, saveImageProviderChannels, setAppSetting } from "@/lib/db";
 import { requireAdmin } from "@/lib/auth";
 import { handleRouteError, jsonError } from "@/lib/http";
 import { normalizeProxyUrl } from "@/lib/proxy";
@@ -30,6 +30,13 @@ export async function PUT(request: NextRequest): Promise<NextResponse> {
     }
     if (input.sub2apiBaseUrl) {
       setAppSetting("sub2api_base_url", input.sub2apiBaseUrl.replace(/\/+$/, ""));
+    }
+    if (input.imageProviderChannels) {
+      try {
+        saveImageProviderChannels(input.imageProviderChannels);
+      } catch (error) {
+        return jsonError(error instanceof Error ? error.message : "模型渠道配置不正确", 400);
+      }
     }
     if (Object.prototype.hasOwnProperty.call(input, "openaiOAuthProxyUrl")) {
       try {

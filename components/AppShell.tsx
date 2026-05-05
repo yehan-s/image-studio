@@ -11,6 +11,7 @@ import {
   LayoutTemplate,
   LogIn,
   LogOut,
+  MousePointer2,
   Sparkles,
   UserPlus,
 } from "lucide-react";
@@ -35,6 +36,7 @@ interface SiteSettingsResponse {
 const navItems = [
   { href: "/", label: "生成工作台", icon: Sparkles },
   { href: "/history", label: "历史记录", icon: History },
+  { href: "/canvas", label: "画布", icon: MousePointer2 },
   { href: "/cases", label: "案例中心", icon: Images },
   { href: "/templates", label: "模板管理", icon: LayoutTemplate },
   { href: "/admin", label: "管理员后台", icon: BarChart3 },
