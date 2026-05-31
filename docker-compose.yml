@@ -1,7 +1,7 @@
 services:
   image-gen-system:
     build: .
-    container_name: "${CONTAINER_NAME:-canvas-realm-studio}"
+    container_name: "${CONTAINER_NAME:-image-studio}"
     ports:
       # 仅绑回环：生图站走 nginx 反代对外（image.yehanapi.com），不直接暴露公网。
       # 本地仍可经 localhost:${APP_PORT} 访问。改 0.0.0.0 会绕过 ufw（见运维手册 §5）。
