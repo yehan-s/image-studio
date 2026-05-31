@@ -5,6 +5,7 @@ import { appConfig, IMAGE_USER_AGENT } from "./config";
 import {
   getRuntimeImageSettings,
   getUsableOpenAIOAuthAccount,
+  getUserSub2apiKey,
   updateOpenAIOAuthAccountStatus,
   updateOpenAIOAuthAccountTokens,
 } from "./db";
@@ -61,7 +62,7 @@ export async function callImageModel(
   sourceImagePaths: string[],
   signal?: AbortSignal,
 ): Promise<MaterializedImage[]> {
-  const candidates = await resolveImageProviderCandidates(signal);
+  const candidates = await resolveImageProviderCandidates(task.user_id, signal);
   let lastError: unknown = null;
 
   for (const settings of candidates) {
@@ -118,8 +119,29 @@ function normalizeTaskImageConcurrency(value: number | null, fallback: number): 
   return Math.min(Math.max(1, Math.floor(value)), Math.max(1, fallback));
 }
 
-async function resolveImageProviderCandidates(signal?: AbortSignal): Promise<ImageRequestSettings[]> {
+async function resolveImageProviderCandidates(
+  userId?: string | null,
+  signal?: AbortSignal,
+): Promise<ImageRequestSettings[]> {
   const settings = getRuntimeImageSettings();
+
+  // BYOK 优先：登录用户有自己的 sub2api key，则用它调用（扣他自己的额度）。
+  // key 即账号模式下每个用户必然有 key；缺省时落到下方全局 channels/oauth 兜底。
+  if (userId) {
+    const userKey = getUserSub2apiKey(userId);
+    if (userKey) {
+      return [{
+        provider: "sub2api",
+        channelId: "byok",
+        channelName: "用户自有 Key",
+        baseUrl: settings.sub2apiBaseUrl.replace(/\/+$/, ""),
+        bearerToken: userKey,
+        imageModel: settings.imageModel,
+        imageConcurrency: settings.imageConcurrency,
+      }];
+    }
+  }
+
   if (settings.imageProvider === "openai_oauth") {
     const account = getUsableOpenAIOAuthAccount();
     if (!account) {
@@ -169,6 +191,24 @@ async function resolveImageProviderCandidates(signal?: AbortSignal): Promise<Ima
     imageModel: channel.model,
     imageConcurrency: settings.imageConcurrency,
   }));
+}
+
+// 验证一个 sub2api key 是否有效（登录时用）：GET /models，200 即有效。
+export async function verifySub2apiKey(key: string, signal?: AbortSignal): Promise<boolean> {
+  const baseUrl = getRuntimeImageSettings().sub2apiBaseUrl.replace(/\/+$/, "");
+  try {
+    const response = await fetch(`${baseUrl}/models`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${key}`,
+        "User-Agent": IMAGE_USER_AGENT,
+      },
+      signal: signal ?? AbortSignal.timeout(10_000),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
 }
 
 async function getFreshOpenAIAccessToken(

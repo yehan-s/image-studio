@@ -1759,6 +1759,21 @@ button.nav-link {
   color: var(--danger);
 }
 
+.auth-text-toggle {
+  align-self: center;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 0.8rem;
+  cursor: pointer;
+  text-decoration: underline;
+  padding: 0.25rem;
+}
+
+.auth-text-toggle:hover {
+  color: var(--fg, inherit);
+}
+
 .workbench-layout {
   display: grid;
   grid-template-columns: minmax(19rem, 24rem) minmax(0, 1fr) minmax(19rem, 24rem);

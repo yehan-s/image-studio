@@ -110,8 +110,8 @@ function extractTextPayload(payload: unknown): string {
   return chatPayload.choices?.[0]?.message?.content ?? "";
 }
 
-export async function optimizePromptWithModel(input: PromptOptimizationInput): Promise<string> {
-  const settings = await resolvePromptOptimizerRuntimeSettings();
+export async function optimizePromptWithModel(input: PromptOptimizationInput, userId?: string | null): Promise<string> {
+  const settings = await resolvePromptOptimizerRuntimeSettings(userId);
   const userPrompt = buildPromptOptimizerUserPrompt(input);
 
   if (settings.provider === "openai_oauth") {
@@ -140,13 +140,24 @@ export async function optimizePromptWithModel(input: PromptOptimizationInput): P
   return extractOptimizedPrompt(payload);
 }
 
-async function resolvePromptOptimizerRuntimeSettings(): Promise<PromptOptimizerRuntimeSettings> {
+async function resolvePromptOptimizerRuntimeSettings(userId?: string | null): Promise<PromptOptimizerRuntimeSettings> {
   const [{ appConfig }, db] = await Promise.all([
     import("./config"),
     import("./db"),
   ]);
   const imageSettings = db.getRuntimeImageSettings();
   const promptSettings = db.getPromptOptimizerSettings();
+
+  // BYOK 优先：用登录用户自己的 sub2api key 做优化（扣他自己的额度）
+  const userKey = userId ? db.getUserSub2apiKey(userId) : null;
+  if (userKey) {
+    return {
+      provider: "sub2api",
+      baseUrl: imageSettings.sub2apiBaseUrl.replace(/\/+$/, ""),
+      bearerToken: userKey,
+      model: promptSettings.model,
+    };
+  }
 
   if (imageSettings.imageProvider === "openai_oauth") {
     const account = db.getUsableOpenAIOAuthAccount();
@@ -164,8 +175,10 @@ async function resolvePromptOptimizerRuntimeSettings(): Promise<PromptOptimizerR
     };
   }
 
-  if (!imageSettings.sub2apiApiKey) {
-    throw new Error("图片接口 API Key 未配置，无法优化提示词。");
+  // 无用户 key：仅当显式开启 PROMPT_OPTIMIZER_FALLBACK_GLOBAL 时回退全局 key（默认不偷偷花站长额度）
+  const fallbackGlobal = process.env.PROMPT_OPTIMIZER_FALLBACK_GLOBAL?.trim().toLowerCase() === "true";
+  if (!fallbackGlobal || !imageSettings.sub2apiApiKey) {
+    throw new Error("无法优化提示词：你的 API Key 可能未开通文本模型，可直接用原 prompt 生图。");
   }
 
   return {

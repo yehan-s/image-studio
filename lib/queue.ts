@@ -14,7 +14,7 @@ import {
 import { normalizeImageConcurrency } from "./concurrency";
 import { callImageModel } from "./image-provider";
 import { isModelTimeoutMessage } from "./model-error";
-import { parseSize, saveGeneratedImageFile } from "./storage";
+import { parseSize, readImageDimensions, saveGeneratedImageFile } from "./storage";
 import type { GenerationTaskRow } from "./types";
 
 export async function processNextQueuedTask(): Promise<boolean> {
@@ -52,7 +52,6 @@ async function processClaimedTask(task: GenerationTaskRow): Promise<void> {
       return;
     }
     updateTaskProgressStage(task.id, "saving");
-    const { width, height } = parseSize(task.size);
 
     for (const item of generated) {
       const latest = getGenerationTask(task.id);
@@ -68,12 +67,15 @@ async function processClaimedTask(task: GenerationTaskRow): Promise<void> {
         mimeType: item.mimeType,
       });
 
+      // 从图片字节解析真实像素；解析不出再回退到档位比例（极少触发）
+      const dimensions = readImageDimensions(item.bytes, item.mimeType) ?? parseSize(task.size);
+
       createGeneratedImage({
         id: imageId,
         taskId: task.id,
         filePath,
-        width,
-        height,
+        width: dimensions.width,
+        height: dimensions.height,
         prompt: task.prompt,
         mode: task.mode,
         templateId: task.template_id,

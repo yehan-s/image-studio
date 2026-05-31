@@ -7,6 +7,7 @@ import { composeConversationPrompt, normalizeConversationFixedPrompt } from "./c
 import { normalizeImageConcurrency } from "./concurrency";
 import { normalizeImageSizeOption } from "./image-options";
 import { normalizeProxyUrl, redactProxyUrl } from "./proxy";
+import { decryptToken } from "./openai-oauth";
 import type {
   AdminStats,
   AdminUserListSummary,
@@ -672,6 +673,8 @@ function initializeSchema(database: DatabaseSync): void {
   ensureColumn(database, "conversations", "fixed_prompt", "TEXT");
   ensureColumn(database, "users", "status", "TEXT NOT NULL DEFAULT 'active'");
   ensureColumn(database, "users", "monthly_quota", "INTEGER");
+  ensureColumn(database, "users", "sub2api_key_ciphertext", "TEXT");
+  ensureColumn(database, "users", "sub2api_key_hash", "TEXT");
   database.exec(`
     CREATE INDEX IF NOT EXISTS idx_generation_tasks_user
       ON generation_tasks (user_id, created_at);
@@ -687,6 +690,9 @@ function initializeSchema(database: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_canvas_projects_user
       ON canvas_projects (user_id);
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_sub2api_key_hash
+      ON users (sub2api_key_hash) WHERE sub2api_key_hash IS NOT NULL;
   `);
   seedDefaultGroups(database);
 }
@@ -839,6 +845,89 @@ export function getUserByEmail(email: string): UserRow | null {
   return castRow<UserRow>(
     getDb().prepare("SELECT * FROM users WHERE email = ? LIMIT 1").get(email.toLowerCase()),
   );
+}
+
+// ===== BYOK：key 即账号 =====
+
+// 用 sub2api key 的 SHA256 作为身份索引定位用户
+export function getUserBySub2apiKeyHash(hash: string): UserRow | null {
+  return castRow<UserRow>(
+    getDb().prepare("SELECT * FROM users WHERE sub2api_key_hash = ? LIMIT 1").get(hash),
+  );
+}
+
+// 首次用某 key 登录时创建用户。email/password_hash 仅为满足 NOT NULL/UNIQUE 约束的占位，
+// 不用于登录（verifyPassword 对非 scrypt 串恒返回 false）。
+export function createKeyUser(input: { keyHash: string; ciphertext: string; role: UserRole }): UserRow {
+  const id = createId("usr");
+  const createdAt = nowIso();
+  const email = `key_${input.keyHash.slice(0, 16)}@byok.local`;
+  const name = `访客_${input.keyHash.slice(0, 8)}`;
+  getDb()
+    .prepare(
+      `
+      INSERT INTO users (
+        id, email, name, password_hash, role, status, group_id, monthly_quota,
+        created_at, updated_at, sub2api_key_ciphertext, sub2api_key_hash
+      ) VALUES (?, ?, ?, 'byok:no-password', ?, 'active', ?, NULL, ?, ?, ?, ?)
+    `,
+    )
+    .run(id, email, name, input.role, getDefaultGroup().id, createdAt, createdAt, input.ciphertext, input.keyHash);
+
+  const user = getUserById(id);
+  if (!user) {
+    throw new Error("用户创建失败");
+  }
+  return user;
+}
+
+// SSO：用 sub2api 的稳定 user_id 作为身份索引建用户。
+// 临时 key 每次登录都会轮换，故不能用 key 哈希当身份；email 用 sub2api user_id 派生，保证同一人始终复用同一行。
+export function createSsoUser(input: {
+  sub2apiUserId: string;
+  username: string | null;
+  ciphertext: string;
+  keyHash: string;
+  role: UserRole;
+}): UserRow {
+  const id = createId("usr");
+  const createdAt = nowIso();
+  const email = `sso_${input.sub2apiUserId}@sub2api.local`;
+  const name = input.username?.trim() || `用户_${input.sub2apiUserId}`;
+  getDb()
+    .prepare(
+      `
+      INSERT INTO users (
+        id, email, name, password_hash, role, status, group_id, monthly_quota,
+        created_at, updated_at, sub2api_key_ciphertext, sub2api_key_hash
+      ) VALUES (?, ?, ?, 'byok:no-password', ?, 'active', ?, NULL, ?, ?, ?, ?)
+    `,
+    )
+    .run(id, email, name, input.role, getDefaultGroup().id, createdAt, createdAt, input.ciphertext, input.keyHash);
+
+  const user = getUserById(id);
+  if (!user) {
+    throw new Error("用户创建失败");
+  }
+  return user;
+}
+
+// 解密返回用户当前的 sub2api key 明文（worker 生图、prompt 优化取 key 用）
+export function getUserSub2apiKey(userId: string): string | null {
+  const row = castRow<{ sub2api_key_ciphertext: string | null }>(
+    getDb().prepare("SELECT sub2api_key_ciphertext FROM users WHERE id = ? LIMIT 1").get(userId),
+  );
+  if (!row?.sub2api_key_ciphertext) {
+    return null;
+  }
+  return decryptToken(row.sub2api_key_ciphertext);
+}
+
+// 用户重新登录时刷新密文/哈希（应对加密密钥轮换或 key 变更）
+export function updateUserSub2apiKey(userId: string, ciphertext: string, keyHash: string): void {
+  getDb()
+    .prepare("UPDATE users SET sub2api_key_ciphertext = ?, sub2api_key_hash = ?, updated_at = ? WHERE id = ?")
+    .run(ciphertext, keyHash, nowIso(), userId);
 }
 
 export function listUsers(): UserRow[] {
