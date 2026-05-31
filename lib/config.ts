@@ -69,11 +69,43 @@ function readBooleanEnv(name: string, fallback = false): boolean {
   return ["1", "true", "yes", "on"].includes(raw);
 }
 
+// SSO 管理 API base：sub2api 的 SSO 端点在管理根 /api/v1，与 OpenAI 兼容网关根 /v1 不同。
+// 未显式配置时，从网关 base 的 origin 派生 `${origin}/api/v1`。
+function deriveSsoBaseUrl(): string {
+  const explicit = process.env.SUB2API_SSO_BASE_URL?.trim();
+  if (explicit) {
+    return explicit.replace(/\/+$/, "");
+  }
+  const gateway = process.env.SUB2API_BASE_URL || "https://s2a.laolin.ai/v1";
+  try {
+    return `${new URL(gateway).origin}/api/v1`;
+  } catch {
+    return gateway.replace(/\/+$/, "");
+  }
+}
+
+// sub2api SPA 的源（SSO 中继页所在），start 路由把浏览器导向 `${appUrl}/sso`。
+function deriveSub2apiAppUrl(): string {
+  const explicit = process.env.SUB2API_APP_URL?.trim();
+  if (explicit) {
+    return explicit.replace(/\/+$/, "");
+  }
+  const gateway = process.env.SUB2API_BASE_URL || "https://s2a.laolin.ai/v1";
+  try {
+    return new URL(gateway).origin;
+  } catch {
+    return gateway.replace(/\/+$/, "");
+  }
+}
+
 export const appConfig = {
   databasePath: resolvePathFromEnv(process.env.DATABASE_URL, "data/app.db"),
   imageStorageDir: resolvePathFromEnv(process.env.IMAGE_STORAGE_DIR, "data/images"),
   sub2apiBaseUrl: process.env.SUB2API_BASE_URL || "https://s2a.laolin.ai/v1",
   sub2apiApiKey: process.env.SUB2API_API_KEY || "",
+  sub2apiSsoBaseUrl: deriveSsoBaseUrl(),
+  sub2apiSsoSharedSecret: process.env.SUB2API_SSO_SHARED_SECRET || "",
+  sub2apiAppUrl: deriveSub2apiAppUrl(),
   imageModel: process.env.IMAGE_MODEL || "gpt-image-2",
   promptOptimizerModel: process.env.PROMPT_OPTIMIZER_MODEL || "gpt-5.5",
   imageRequestTimeoutMs: readNumberEnv("IMAGE_REQUEST_TIMEOUT_MS", 300_000),

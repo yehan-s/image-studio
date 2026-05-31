@@ -1,5 +1,8 @@
 export const sizeOptions = [
   "auto",
+  "quality_normal",
+  "quality_2k",
+  "quality_4k",
   "ecommerce_main_1_1",
   "ecommerce_vertical_3_4",
   "ecommerce_horizontal_4_3",
@@ -14,6 +17,9 @@ export type ImageSizeOption = (typeof sizeOptions)[number];
 
 export const imageSizeLabels: Record<ImageSizeOption, string> = {
   auto: "不限制",
+  quality_normal: "普通 (1K)",
+  quality_2k: "高清 (2K)",
+  quality_4k: "超清 (4K)",
   ecommerce_main_1_1: "电商主图 1:1",
   ecommerce_vertical_3_4: "电商竖图 3:4",
   ecommerce_horizontal_4_3: "电商横图 4:3",
@@ -27,6 +33,9 @@ export const imageSizeLabels: Record<ImageSizeOption, string> = {
 
 const imageSizeApiMap: Record<ImageSizeOption, string | null> = {
   auto: null,
+  quality_normal: "1024x1024",
+  quality_2k: "2048x2048",
+  quality_4k: "3840x2160",
   ecommerce_main_1_1: "1024x1024",
   ecommerce_vertical_3_4: "1024x1536",
   ecommerce_horizontal_4_3: "1536x1024",
@@ -40,6 +49,9 @@ const imageSizeApiMap: Record<ImageSizeOption, string | null> = {
 
 const imageSizeRatioMap: Record<ImageSizeOption, { width: number; height: number }> = {
   auto: { width: 0, height: 0 },
+  quality_normal: { width: 1, height: 1 },
+  quality_2k: { width: 1, height: 1 },
+  quality_4k: { width: 16, height: 9 },
   ecommerce_main_1_1: { width: 1, height: 1 },
   ecommerce_vertical_3_4: { width: 3, height: 4 },
   ecommerce_horizontal_4_3: { width: 4, height: 3 },
@@ -90,7 +102,9 @@ export function sizeFromDimensions(width: number, height: number): ImageSizeOpti
   }
 
   const ratio = width / height;
-  const candidates = sizeOptions.filter((option) => option !== "auto");
+  // 清晰度档位(普通/2K/4K)不参与"按已有图比例反推"，避免和电商主图等比例预设冲突
+  const qualityTiers = new Set<ImageSizeOption>(["quality_normal", "quality_2k", "quality_4k"]);
+  const candidates = sizeOptions.filter((option) => option !== "auto" && !qualityTiers.has(option));
   const closest = candidates.reduce<ImageSizeOption>((best, candidate) => {
     const bestRatio = imageSizeRatioMap[best].width / imageSizeRatioMap[best].height;
     const candidateRatio = imageSizeRatioMap[candidate].width / imageSizeRatioMap[candidate].height;

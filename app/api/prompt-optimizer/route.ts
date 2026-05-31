@@ -9,9 +9,9 @@ export const dynamic = "force-dynamic";
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
-    requireUser(request);
+    const user = requireUser(request);
     const input = optimizePromptSchema.parse(await request.json());
-    const prompt = await optimizePromptWithModel(input);
+    const prompt = await optimizePromptWithModel(input, user.id);
     return NextResponse.json({ prompt });
   } catch (error) {
     return handleRouteError(error);

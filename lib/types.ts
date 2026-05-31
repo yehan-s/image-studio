@@ -187,6 +187,9 @@ export interface UserRow {
   monthly_quota: number | null;
   created_at: string;
   updated_at: string;
+  // BYOK：用户自己的 sub2api key（密文 + 身份哈希），key 即账号模式下用于登录与生图取 key
+  sub2api_key_ciphertext: string | null;
+  sub2api_key_hash: string | null;
 }
 
 export interface SessionRow {

@@ -226,8 +226,7 @@ export const registerSchema = z.object({
 });
 
 export const loginSchema = z.object({
-  email: z.string().trim().email("邮箱格式不正确").max(160).transform((value) => value.toLowerCase()),
-  password: z.string().min(1, "请输入密码").max(200),
+  key: z.string().trim().min(8, "请输入有效的 API Key").max(500),
 });
 
 export const upsertUserGroupSchema = z.object({

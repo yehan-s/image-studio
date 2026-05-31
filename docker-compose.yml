@@ -5,8 +5,15 @@ services:
     ports:
       - "${APP_PORT:-3000}:3000"
     environment:
-      SUB2API_BASE_URL: "https://s2a.laolin.ai/v1"
-      SUB2API_API_KEY: "${SUB2API_API_KEY}"
+      SUB2API_BASE_URL: "https://api.yehanapi.com/v1"
+      SUB2API_API_KEY: "${SUB2API_API_KEY:-}"
+      OPENAI_OAUTH_TOKEN_ENCRYPTION_KEY: "${OPENAI_OAUTH_TOKEN_ENCRYPTION_KEY}"
+      ADMIN_SUB2API_KEY_HASH: "${ADMIN_SUB2API_KEY_HASH:-}"
+      PROMPT_OPTIMIZER_FALLBACK_GLOBAL: "${PROMPT_OPTIMIZER_FALLBACK_GLOBAL:-false}"
+      # SSO（阶段二）：留空 SUB2API_SSO_SHARED_SECRET 即关闭。base/app url 不配则从 SUB2API_BASE_URL 派生
+      SUB2API_SSO_SHARED_SECRET: "${SUB2API_SSO_SHARED_SECRET:-}"
+      SUB2API_SSO_BASE_URL: "${SUB2API_SSO_BASE_URL:-}"
+      SUB2API_APP_URL: "${SUB2API_APP_URL:-}"
       IMAGE_MODEL: "gpt-image-2"
       IMAGE_STORAGE_DIR: "/app/data/images"
       DATABASE_URL: "file:/app/data/app.db"
