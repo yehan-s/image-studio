@@ -51,10 +51,22 @@ export function AppShell({
   const [user, setUser] = useState<CurrentUser | null>(null);
   const [authLoaded, setAuthLoaded] = useState(false);
   const [siteSettings, setSiteSettings] = useState(initialSiteSettings);
+  const [balance, setBalance] = useState<{ balance: number | null; unit: string } | null>(null);
 
   useEffect(() => {
     document.title = siteSettings.siteTitle;
   }, [siteSettings.siteTitle]);
+
+  // 登录后拉取该用户在 sub2api 的钱包余额（切换页面时刷新，便于生图后看到余额变化）
+  useEffect(() => {
+    if (!user) {
+      setBalance(null);
+      return;
+    }
+    apiJson<{ balance: number | null; unit: string }>("/api/me/balance")
+      .then((payload) => setBalance(payload))
+      .catch(() => setBalance(null));
+  }, [user, pathname]);
 
   useEffect(() => {
     apiJson<AuthResponse>("/api/auth/me")
@@ -127,7 +139,9 @@ export function AppShell({
           {user ? (
             <button className="nav-link account-button" type="button" onClick={logout}>
               <span>{user.name}</span>
-              <span className="badge">{user.monthUsed}/{user.monthlyQuota ?? "不限"}</span>
+              <span className="badge" title="你的 sub2api 钱包余额">
+                {balance?.balance != null ? `余额 $${balance.balance.toFixed(2)}` : "余额 --"}
+              </span>
               <LogOut size={16} aria-hidden="true" />
             </button>
           ) : null}

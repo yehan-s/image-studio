@@ -1387,7 +1387,7 @@ export function WorkbenchClient() {
             </button>
 
             <div className="quota-hint">
-              本次预计消耗 <strong>{estimatedQuotaCost}</strong> 次额度
+              本次生成 <strong>{estimatedQuotaCost}</strong> 张 · 按所选分组计费，扣你的 sub2api 余额
               {selectedTemplate ? <span> · {selectedTemplate.name}</span> : null}
             </div>
 
