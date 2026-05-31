@@ -9,9 +9,9 @@ export const dynamic = "force-dynamic";
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
-    const user = requireUser(request);
+    requireUser(request); // 仍要求登录；提示词优化统一走后台全局 Key，不再用各用户自己的 key
     const input = optimizePromptSchema.parse(await request.json());
-    const prompt = await optimizePromptWithModel(input, user.id);
+    const prompt = await optimizePromptWithModel(input);
     return NextResponse.json({ prompt });
   } catch (error) {
     return handleRouteError(error);

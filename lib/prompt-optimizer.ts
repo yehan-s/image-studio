@@ -110,8 +110,8 @@ function extractTextPayload(payload: unknown): string {
   return chatPayload.choices?.[0]?.message?.content ?? "";
 }
 
-export async function optimizePromptWithModel(input: PromptOptimizationInput, userId?: string | null): Promise<string> {
-  const settings = await resolvePromptOptimizerRuntimeSettings(userId);
+export async function optimizePromptWithModel(input: PromptOptimizationInput): Promise<string> {
+  const settings = await resolvePromptOptimizerRuntimeSettings();
   const userPrompt = buildPromptOptimizerUserPrompt(input);
 
   if (settings.provider === "openai_oauth") {
@@ -140,24 +140,13 @@ export async function optimizePromptWithModel(input: PromptOptimizationInput, us
   return extractOptimizedPrompt(payload);
 }
 
-async function resolvePromptOptimizerRuntimeSettings(userId?: string | null): Promise<PromptOptimizerRuntimeSettings> {
+async function resolvePromptOptimizerRuntimeSettings(): Promise<PromptOptimizerRuntimeSettings> {
   const [{ appConfig }, db] = await Promise.all([
     import("./config"),
     import("./db"),
   ]);
   const imageSettings = db.getRuntimeImageSettings();
   const promptSettings = db.getPromptOptimizerSettings();
-
-  // BYOK 优先：用登录用户自己的 sub2api key 做优化（扣他自己的额度）
-  const userKey = userId ? db.getUserSub2apiKey(userId) : null;
-  if (userKey) {
-    return {
-      provider: "sub2api",
-      baseUrl: imageSettings.sub2apiBaseUrl.replace(/\/+$/, ""),
-      bearerToken: userKey,
-      model: promptSettings.model,
-    };
-  }
 
   if (imageSettings.imageProvider === "openai_oauth") {
     const account = db.getUsableOpenAIOAuthAccount();
@@ -175,10 +164,10 @@ async function resolvePromptOptimizerRuntimeSettings(userId?: string | null): Pr
     };
   }
 
-  // 无用户 key：仅当显式开启 PROMPT_OPTIMIZER_FALLBACK_GLOBAL 时回退全局 key（默认不偷偷花站长额度）
-  const fallbackGlobal = process.env.PROMPT_OPTIMIZER_FALLBACK_GLOBAL?.trim().toLowerCase() === "true";
-  if (!fallbackGlobal || !imageSettings.sub2apiApiKey) {
-    throw new Error("无法优化提示词：你的 API Key 可能未开通文本模型，可直接用原 prompt 生图。");
+  // 提示词优化是「管理员级全局能力」：模型与 Key 仅后台「模型与接口」可配，普通用户没有该页面。
+  // 故所有人的提示词优化统一走后台配置的全局 Key（扣站长额度）；生图仍走每个用户自己的 SSO key（见 image-provider.ts），互不影响。
+  if (!imageSettings.sub2apiApiKey) {
+    throw new Error("提示词优化未配置全局 Key（后台 → 模型与接口 → 默认渠道填入站长 key 并保存）。可直接用原 prompt 生图。");
   }
 
   return {
